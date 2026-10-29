@@ -29,18 +29,18 @@ export function PortalLoginPage({ initialRole = 'doctor' }) {
   const { doctor, login: doctorLogin, isAuthenticated: isDoctorAuthenticated } = useDoctorAuth()
 
   // Doctor Form State
-  const [doctorIdentifier, setDoctorIdentifier] = useState('9826011111')
-  const [doctorPassword, setDoctorPassword] = useState('Doctor@123')
+  
+  const [doctorIdentifier, setDoctorIdentifier] = useState('')
+  const [doctorPassword, setDoctorPassword] = useState('')
   const [doctorLoading, setDoctorLoading] = useState(false)
   const [doctorError, setDoctorError] = useState('')
 
   // Admin Form State
-  const [adminEmail, setAdminEmail] = useState('admin@uniquepathology.example')
-  const [adminPassword, setAdminPassword] = useState('UniqueAdmin@2026')
+  const [adminEmail, setAdminEmail] = useState('')
+  const [adminPassword, setAdminPassword] = useState('')
   const [adminRemember, setAdminRemember] = useState(true)
   const [adminLoading, setAdminLoading] = useState(false)
   const [adminError, setAdminError] = useState('')
-
   // Redirect if already logged in
   useEffect(() => {
     if (activeTab === 'admin' && isAdminAuthenticated) {
@@ -145,6 +145,8 @@ export function PortalLoginPage({ initialRole = 'doctor' }) {
         {activeTab === 'doctor' && (
           <div className="rounded-3xl border border-slate-200 bg-white p-7 sm:p-9 shadow-sm space-y-6 animate-in fade-in">
             {/* Quick Demo Doctor Switcher */}
+
+            {/*
             <div className="rounded-2xl border border-cyan-200 bg-cyan-50/70 p-4 text-xs space-y-2.5">
               <div className="flex items-center justify-between font-extrabold text-cyan-950">
                 <span className="flex items-center gap-1.5">
@@ -200,6 +202,7 @@ export function PortalLoginPage({ initialRole = 'doctor' }) {
                 </button>
               </div>
             </div>
+            */}
 
             {doctorError && (
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-bold text-red-700 flex items-start gap-2.5">
@@ -264,6 +267,8 @@ export function PortalLoginPage({ initialRole = 'doctor' }) {
         {activeTab === 'admin' && (
           <div className="rounded-3xl border border-slate-200 bg-white p-7 sm:p-9 shadow-sm space-y-6 animate-in fade-in">
             {/* Demo Admin Callout */}
+
+             {/*
             <div className="rounded-2xl border border-cyan-200 bg-cyan-50/70 p-4 text-xs text-cyan-950 space-y-2">
               <div className="flex items-center gap-1.5 font-bold text-cyan-900">
                 <Sparkles size={14} className="text-cyan-700" />
@@ -287,6 +292,7 @@ export function PortalLoginPage({ initialRole = 'doctor' }) {
                 </button>
               </div>
             </div>
+             */}
 
             {adminError && (
               <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-xs font-bold text-red-700 flex items-start gap-2.5">
