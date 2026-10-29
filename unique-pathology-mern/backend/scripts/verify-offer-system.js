@@ -3,7 +3,7 @@ import dotenv from 'dotenv'
 
 dotenv.config({ path: 'C:/Users/gulab/Downloads/unique-pathology-mern-starter/unique-pathology-mern/backend/.env' })
 
-const API_BASE = 'http://localhost:5000/api'
+const API_BASE = process.env.API_BASE || 'http://localhost:5000/api'
 const JWT_SECRET = process.env.JWT_SECRET || 'unique-pathology-super-secret-key-development-2024'
 
 // Create a valid admin JWT

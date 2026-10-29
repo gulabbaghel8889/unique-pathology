@@ -1,4 +1,32 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
+/**
+ * Centralized API Base URL Resolver
+ * Ensures that all API calls route to `${VITE_API_URL}/api` in both local and production environments,
+ * regardless of whether VITE_API_URL was set with or without a trailing slash or '/api'.
+ */
+function resolveApiBaseUrl() {
+  const rawUrl = (import.meta.env.VITE_API_URL || '').trim()
+
+  if (!rawUrl) {
+    // If not provided:
+    // In production (e.g. Vercel deployment): default to live Render backend with /api
+    // In development: default to localhost:5000/api
+    return import.meta.env.PROD
+      ? 'https://unique-pathology.onrender.com/api'
+      : 'http://localhost:5000/api'
+  }
+
+  // Strip trailing slashes
+  const cleanUrl = rawUrl.replace(/\/+$/, '')
+
+  // If already ends with /api, use as is; otherwise append /api
+  if (cleanUrl.endsWith('/api')) {
+    return cleanUrl
+  }
+
+  return `${cleanUrl}/api`
+}
+
+export const API_BASE = resolveApiBaseUrl()
 
 // Admin Token Storage
 export function getAdminToken() {
@@ -37,7 +65,17 @@ export function clearDoctorToken() {
 }
 
 export async function apiRequest(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`
+  // Normalize endpoint: ensure leading slash
+  let cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
+
+  // Guard against accidental double '/api/api/...' if an endpoint is called with '/api/...'
+  if (cleanEndpoint === '/api') {
+    cleanEndpoint = ''
+  } else if (cleanEndpoint.startsWith('/api/')) {
+    cleanEndpoint = cleanEndpoint.slice(4) // e.g. '/api/tests' -> '/tests'
+  }
+
+  const url = `${API_BASE}${cleanEndpoint}`
   const headers = {
     ...options.headers,
   }
@@ -58,10 +96,9 @@ export async function apiRequest(endpoint, options = {}) {
         token = getDoctorToken()
       } else {
         // Auto-detect based on endpoint path prefix
-        const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
-        if (cleanPath.startsWith('/admin') || cleanPath.startsWith('/auth/admin')) {
+        if (cleanEndpoint.startsWith('/admin') || cleanEndpoint.startsWith('/auth/admin')) {
           token = getAdminToken()
-        } else if (cleanPath.startsWith('/doctor') || cleanPath.startsWith('/auth/doctor')) {
+        } else if (cleanEndpoint.startsWith('/doctor') || cleanEndpoint.startsWith('/auth/doctor')) {
           token = getDoctorToken()
         } else {
           token = getAdminToken() || getDoctorToken()
@@ -100,5 +137,3 @@ export async function apiRequest(endpoint, options = {}) {
 
   return data
 }
-
-export { API_BASE }
