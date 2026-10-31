@@ -589,7 +589,7 @@ export function HomePage({ publicConfig }) {
             {/* Phlebotomy Image */}
             <div className="img-zoom-container overflow-hidden rounded-2xl border-4 border-white shadow-xl">
               <img
-                src="https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?auto=format&fit=crop&w=1000&q=85"
+                src="https://www.shutterstock.com/shutterstock/photos/145429276/display_1500/stock-photo-nurse-is-going-to-draw-blood-from-vein-145429276.jpg"
                 alt="Healthcare professional gently taking patient blood sample with sterile equipment"
                 className="h-64 sm:h-80 w-full object-cover"
                 loading="lazy"
