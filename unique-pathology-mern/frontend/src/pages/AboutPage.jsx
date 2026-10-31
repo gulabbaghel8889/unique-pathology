@@ -35,7 +35,7 @@ export function AboutPage({ publicConfig }) {
       <div className="grid gap-4 sm:gap-6 sm:grid-cols-3">
         <div className="img-zoom-container rounded-2xl overflow-hidden shadow-md border-2 border-white relative group">
           <img
-            src="https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=800&q=80"
+            src="https://www.asterhospitals.ae/fileadmin/user_upload/Pathology.jpg"
             alt="Automated clinical biochemistry analyzer equipment"
             className="h-52 sm:h-64 w-full object-cover"
             loading="lazy"
@@ -59,7 +59,7 @@ export function AboutPage({ publicConfig }) {
 
         <div className="img-zoom-container rounded-2xl overflow-hidden shadow-md border-2 border-white relative group">
           <img
-            src="https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?auto=format&fit=crop&w=800&q=80"
+            src="https://hrdiagnostic.in/blog/wp-content/uploads/2025/05/Pathology-Lab.webp"
             alt="Gentle patient blood draw with sterile vacuum tubes"
             className="h-52 sm:h-64 w-full object-cover"
             loading="lazy"
