@@ -128,9 +128,13 @@ export function ReportsPage() {
       })
 
       setStep('verified')
-      setDownloadToken(data.downloadToken)
+      setDownloadToken(data.downloadToken || '')
       setReportInfo(data.reportInfo)
-      setSuccessMsg('Identity verified! Your diagnostic report is ready for secure download.')
+      if (data.isPaymentPending || data.paymentStatus !== 'paid') {
+        setError('Payment Pending. Please clear payment before downloading the report.')
+      } else {
+        setSuccessMsg('Identity verified! Your diagnostic report is ready for secure download.')
+      }
     } catch (err) {
       setError(err.message || 'Invalid or expired verification code.')
     } finally {
@@ -140,7 +144,14 @@ export function ReportsPage() {
 
   // Download action
   function handleDownloadReport() {
-    if (!downloadToken) return
+    if (!reportInfo || reportInfo.paymentStatus !== 'paid' || reportInfo.isPaymentPending) {
+      setError('Payment Pending. Please clear payment before downloading the report.')
+      return
+    }
+    if (!downloadToken) {
+      setError('Download session expired or invalid. Please request a new verification code.')
+      return
+    }
     const downloadUrl = `${API_BASE}/reports/download/${downloadToken}`
     window.location.href = downloadUrl
   }
@@ -354,24 +365,69 @@ export function ReportsPage() {
 
       {/* STEP 3: Report Download Ready */}
       {step === 'verified' && reportInfo && (
-        <div className="rounded-3xl border-2 border-emerald-300 bg-white p-8 sm:p-10 shadow-xl space-y-6 animate-in zoom-in-95">
+        <div
+          className={`rounded-3xl border-2 bg-white p-8 sm:p-10 shadow-xl space-y-6 animate-in zoom-in-95 ${
+            reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+              ? 'border-emerald-300'
+              : 'border-amber-300'
+          }`}
+        >
           <div className="flex items-start justify-between border-b border-slate-100 pb-5">
             <div className="flex items-center gap-3">
-              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-emerald-50 text-emerald-600">
-                <FileText size={26} />
+              <span
+                className={`grid h-12 w-12 place-items-center rounded-2xl ${
+                  reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : 'bg-amber-50 text-amber-600'
+                }`}
+              >
+                {reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending ? (
+                  <FileText size={26} />
+                ) : (
+                  <Lock size={26} />
+                )}
               </span>
               <div>
-                <span className="text-xs font-black uppercase tracking-wider text-emerald-700">
-                  Verified Official Report
+                <span
+                  className={`text-xs font-black uppercase tracking-wider ${
+                    reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+                      ? 'text-emerald-700'
+                      : 'text-amber-700'
+                  }`}
+                >
+                  {reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+                    ? 'Verified Official Report'
+                    : 'Report Ready — Payment Pending'}
                 </span>
                 <h2 className="text-xl font-black text-[#073b66]">{reportInfo.reportTitle}</h2>
               </div>
             </div>
 
-            <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
-              Ready
-            </span>
+            {reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending ? (
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-800">
+                Ready to Download
+              </span>
+            ) : (
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">
+                Payment Pending
+              </span>
+            )}
           </div>
+
+          {/* Payment Pending Alert Notice */}
+          {!(reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending) && (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs font-bold text-amber-900 flex items-start gap-3">
+              <AlertCircle size={20} className="shrink-0 text-amber-700 mt-0.5" />
+              <div className="space-y-1">
+                <strong className="block text-sm font-extrabold text-amber-950">
+                  Payment Pending. Please clear payment before downloading the report.
+                </strong>
+                <p className="font-normal text-amber-800">
+                  The clinical diagnostic report has been verified and released by the laboratory pathologist, but download access is restricted until test payment is settled. Please visit our Mandideep diagnostic centre or contact reception at +91 89620 38429 to clear your dues.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Details table */}
           <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200/80 space-y-2 text-xs">
@@ -388,6 +444,18 @@ export function ReportsPage() {
               <span className="font-bold text-slate-800">{reportInfo.testNames?.join(', ')}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-200/50">
+              <span className="text-slate-500 font-medium">Payment Status:</span>
+              <span
+                className={`font-black uppercase tracking-wider px-2 py-0.5 rounded text-[10px] ${
+                  reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}
+              >
+                {reportInfo.paymentStatus || 'pending'}
+              </span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-200/50">
               <span className="text-slate-500 font-medium">Verified By:</span>
               <span className="font-bold text-slate-800">{reportInfo.verifiedBy}</span>
             </div>
@@ -398,16 +466,30 @@ export function ReportsPage() {
           </div>
 
           {/* Download button */}
-          <button
-            onClick={handleDownloadReport}
-            className="w-full rounded-2xl bg-cyan-600 py-4 text-base font-extrabold text-white shadow-xl shadow-cyan-600/25 hover:bg-cyan-700 transition flex items-center justify-center gap-2"
-          >
-            <Download size={20} />
-            <span>Download Official PDF Diagnostic Report</span>
-          </button>
+          {reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending ? (
+            <button
+              onClick={handleDownloadReport}
+              className="w-full rounded-2xl bg-cyan-600 py-4 text-base font-extrabold text-white shadow-xl shadow-cyan-600/25 hover:bg-cyan-700 transition flex items-center justify-center gap-2"
+            >
+              <Download size={20} />
+              <span>Download Official PDF Diagnostic Report</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled
+              className="w-full rounded-2xl bg-slate-200 py-4 text-base font-extrabold text-slate-400 cursor-not-allowed flex items-center justify-center gap-2 border border-slate-300"
+              title="Payment Pending. Please clear payment before downloading the report."
+            >
+              <Lock size={20} />
+              <span>Download Report (Disabled — Payment Pending)</span>
+            </button>
+          )}
 
           <p className="text-[11px] text-center text-slate-400">
-            For security, this download token will automatically expire after 15 minutes. Report access has been recorded in the lab regulatory audit trail.
+            {reportInfo.paymentStatus === 'paid' && !reportInfo.isPaymentPending
+              ? 'For security, this download token will automatically expire after 15 minutes. Report access has been recorded in the lab regulatory audit trail.'
+              : 'Download access will be automatically unlocked immediately once payment status is updated to PAID.'}
           </p>
         </div>
       )}

@@ -41,9 +41,10 @@ import {
   Layers,
   Calendar,
   ExternalLink,
+  Download,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { apiRequest } from '../api.js'
+import { apiRequest, API_BASE, getAdminToken } from '../api.js'
 
 export function AdminDashboardPage() {
   const { admin, logout, isAuthenticated } = useAuth()
@@ -59,12 +60,30 @@ export function AdminDashboardPage() {
   const [enquiries, setEnquiries] = useState([])
   const [auditLogs, setAuditLogs] = useState([])
   const [doctors, setDoctors] = useState([])
+  const [downloadLogs, setDownloadLogs] = useState([])
 
   const [patients, setPatients] = useState([])
   const [patientSearch, setPatientSearch] = useState('')
   const [testSearch, setTestSearch] = useState('')
   const [testCategoryFilter, setTestCategoryFilter] = useState('all')
   const [testStatusFilter, setTestStatusFilter] = useState('all')
+
+  const [paymentSearch, setPaymentSearch] = useState('')
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState('all')
+  const [syncBusy, setSyncBusy] = useState(false)
+
+  // Payment Method Selection Modal State
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+  const [paymentBooking, setPaymentBooking] = useState(null)
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('Cash')
+  const [paymentNotes, setPaymentNotes] = useState('')
+  const [paymentBusy, setPaymentBusy] = useState(false)
+
+  // Report Replace Modal State
+  const [replaceReportModalOpen, setReplaceReportModalOpen] = useState(false)
+  const [replacingReport, setReplacingReport] = useState(null)
+  const [replaceFile, setReplaceFile] = useState(null)
+  const [replaceBusy, setReplaceBusy] = useState(false)
 
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -205,9 +224,10 @@ export function AdminDashboardPage() {
         apiRequest('/admin/patients'),
         apiRequest('/admin/offers'),
         apiRequest('/admin/offers/analytics'),
+        apiRequest('/admin/download-logs'),
       ])
 
-      const [mRes, bRes, tRes, pRes, rRes, payRes, enqRes, audRes, docRes, patRes, offRes, offAnRes] = results
+      const [mRes, bRes, tRes, pRes, rRes, payRes, enqRes, audRes, docRes, patRes, offRes, offAnRes, dlRes] = results
 
       if (mRes.status === 'fulfilled') setMetrics(mRes.value?.metrics || {})
       if (bRes.status === 'fulfilled') setBookings(bRes.value?.bookings || [])
@@ -221,6 +241,7 @@ export function AdminDashboardPage() {
       if (patRes.status === 'fulfilled') setPatients(patRes.value?.patients || [])
       if (offRes.status === 'fulfilled') setOffers(offRes.value?.offers || [])
       if (offAnRes.status === 'fulfilled') setOfferMetrics(offAnRes.value?.metrics || null)
+      if (dlRes.status === 'fulfilled') setDownloadLogs(dlRes.value?.downloadLogs || [])
     } catch (err) {
       console.warn('Dashboard data fetch error:', err.message)
     } finally {
@@ -263,16 +284,123 @@ export function AdminDashboardPage() {
     }
   }
 
-  async function updateBookingPayment(id, paymentStatus) {
+  function handleOpenPaymentModal(booking) {
+    setPaymentBooking(booking)
+    setSelectedPaymentMethod('Cash')
+    setPaymentNotes('')
+    setPaymentModalOpen(true)
+  }
+
+  async function handleConfirmPayment(e) {
+    if (e) e.preventDefault()
+    if (!paymentBooking) return
+    if (!selectedPaymentMethod) {
+      alert('Please select a payment method before confirming payment.')
+      return
+    }
+
+    setPaymentBusy(true)
+    try {
+      await apiRequest(`/admin/bookings/${paymentBooking._id}/payment`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          paymentStatus: 'paid',
+          paymentMethod: selectedPaymentMethod,
+          notes: paymentNotes || 'Reconciled at admin desk',
+        }),
+      })
+      setActionNotice(`Payment recorded (${selectedPaymentMethod}) for ${paymentBooking.reference}`)
+      setPaymentModalOpen(false)
+      setPaymentBooking(null)
+      await loadAllDashboardData()
+    } catch (err) {
+      alert(`Error recording payment: ${err.message}`)
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
+  async function updateBookingPayment(id, paymentStatus, paymentMethod = 'Cash') {
     try {
       await apiRequest(`/admin/bookings/${id}/payment`, {
         method: 'PATCH',
-        body: JSON.stringify({ paymentStatus, notes: 'Updated from admin console' }),
+        body: JSON.stringify({
+          paymentStatus,
+          paymentMethod,
+          notes: 'Updated from admin console',
+        }),
       })
       setActionNotice(`Payment status updated to ${paymentStatus}`)
-      loadAllDashboardData()
+      await loadAllDashboardData()
     } catch (err) {
       alert(`Error updating payment: ${err.message}`)
+    }
+  }
+
+  async function handleSyncPayments() {
+    setSyncBusy(true)
+    try {
+      const res = await apiRequest('/admin/payments/sync', { method: 'POST' })
+      setActionNotice(`Payment sync complete: ${res.createdPayments} missing record(s) created, ${res.totalPaymentsCount} total payments.`)
+      await loadAllDashboardData()
+    } catch (err) {
+      alert(`Sync error: ${err.message}`)
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  function handleAdminViewReport(report) {
+    const token = getAdminToken()
+    const viewUrl = `${API_BASE}/admin/reports/${report._id}/view?token=${encodeURIComponent(token)}`
+    window.open(viewUrl, '_blank')
+  }
+
+  function handleAdminDownloadReport(report) {
+    const token = getAdminToken()
+    const downloadUrl = `${API_BASE}/admin/reports/${report._id}/download?token=${encodeURIComponent(token)}`
+    const a = document.createElement('a')
+    a.href = downloadUrl
+    a.download = `UniquePathology_${report.bookingReference}.pdf`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setActionNotice(`Downloading report for ${report.bookingReference}`)
+    setTimeout(() => loadAllDashboardData(), 1200)
+  }
+
+  function handleOpenReplaceModal(report) {
+    setReplacingReport(report)
+    setReplaceFile(null)
+    setReplaceReportModalOpen(true)
+  }
+
+  async function handleReplaceReportSubmit(e) {
+    e.preventDefault()
+    if (!replaceFile || !replacingReport) {
+      alert('Please select a replacement report file (PDF, JPG, PNG).')
+      return
+    }
+
+    setReplaceBusy(true)
+    try {
+      const formData = new FormData()
+      formData.append('reportFile', replaceFile)
+
+      await apiRequest(`/admin/reports/${replacingReport._id}/replace`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      setActionNotice(`Report replaced successfully for booking ${replacingReport.bookingReference}`)
+      setReplaceReportModalOpen(false)
+      setReplacingReport(null)
+      setReplaceFile(null)
+      await loadAllDashboardData()
+    } catch (err) {
+      alert(`Failed to replace report: ${err.message}`)
+    } finally {
+      setReplaceBusy(false)
     }
   }
 
@@ -739,7 +867,7 @@ export function AdminDashboardPage() {
               { id: 'reports', label: `Reports (${reports.length})`, icon: FileText },
               { id: 'payments', label: `Payments (${payments.length})`, icon: CreditCard },
               { id: 'enquiries', label: `Enquiries (${enquiries.length})`, icon: Mail },
-              { id: 'audit', label: 'Audit Trail', icon: ShieldCheck },
+              
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -2114,17 +2242,36 @@ export function AdminDashboardPage() {
                         </td>
 
                         <td className="py-3 px-3">
-                          <button
-                            onClick={() => updateBookingPayment(b._id, b.paymentStatus === 'paid' ? 'pending' : 'paid')}
-                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                              b.paymentStatus === 'paid'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                            }`}
-                            title="Click to toggle paid / pending"
-                          >
-                            {b.paymentStatus}
-                          </button>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              onClick={() => {
+                                if (b.paymentStatus === 'paid') {
+                                  if (window.confirm(`Mark payment as pending for booking ${b.reference}?`)) {
+                                    updateBookingPayment(b._id, 'pending')
+                                  }
+                                } else {
+                                  handleOpenPaymentModal(b)
+                                }
+                              }}
+                              className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider transition ${
+                                b.paymentStatus === 'paid'
+                                  ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                  : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                              }`}
+                              title={b.paymentStatus === 'paid' ? 'Click to change to pending' : 'Click to select payment method and mark as PAID'}
+                            >
+                              {b.paymentStatus}
+                            </button>
+                            {b.paymentStatus !== 'paid' && (
+                              <button
+                                onClick={() => handleOpenPaymentModal(b)}
+                                className="rounded-lg bg-[#073b66] px-2 py-0.5 text-[10px] font-extrabold text-white hover:bg-[#052b4b] shadow-xs"
+                                title="Select payment method and confirm"
+                              >
+                                + Pay
+                              </button>
+                            )}
+                          </div>
                         </td>
 
                         <td className="py-3 px-3 text-right">
@@ -2727,13 +2874,39 @@ export function AdminDashboardPage() {
                         ))}
                       </td>
                       <td className="py-3 px-3 text-right">
-                        <button
-                          onClick={() => handleDeleteReport(r._id)}
-                          className="p-1.5 text-red-600 hover:bg-red-50 rounded"
-                          title="Delete Report"
-                        >
-                          <Trash2 size={15} />
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          <button
+                            onClick={() => handleAdminViewReport(r)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-cyan-50 px-2.5 py-1 text-[11px] font-bold text-cyan-800 hover:bg-cyan-100 transition"
+                            title="View Report PDF in new tab"
+                          >
+                            <Eye size={13} />
+                            <span>View</span>
+                          </button>
+                          <button
+                            onClick={() => handleAdminDownloadReport(r)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 transition"
+                            title="Download Report File"
+                          >
+                            <Download size={13} />
+                            <span>Download</span>
+                          </button>
+                          <button
+                            onClick={() => handleOpenReplaceModal(r)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 transition"
+                            title="Replace existing file with updated PDF"
+                          >
+                            <RefreshCw size={13} />
+                            <span>Replace</span>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteReport(r._id)}
+                            className="p-1.5 text-red-600 hover:bg-red-50 rounded"
+                            title="Delete Report"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -2748,44 +2921,209 @@ export function AdminDashboardPage() {
         {/* ========================================================= */}
         {activeTab === 'payments' && (
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs space-y-6 animate-in fade-in">
-            <h2 className="text-xl font-black text-[#073b66]">Payment Reconciliation</h2>
-            <p className="text-xs text-slate-500">
-              Razorpay gateway transactions and manual desk payments logged with verification status.
-            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-black text-[#073b66]">Payment Reconciliation & Ledger</h2>
+                <p className="text-xs text-slate-500">
+                  Automated records for all paid bookings across Cash, UPI, Card, and Bank Transfer with full audit trail.
+                </p>
+              </div>
 
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleSyncPayments}
+                  disabled={syncBusy}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-50 border border-cyan-200 px-3.5 py-2 text-xs font-bold text-cyan-900 hover:bg-cyan-100 transition disabled:opacity-50"
+                  title="Scan for paid bookings and generate missing payment records"
+                >
+                  <RefreshCw size={14} className={syncBusy ? 'animate-spin' : ''} />
+                  <span>{syncBusy ? 'Syncing...' : 'Sync Missing Payments'}</span>
+                </button>
+                <span className="text-xs font-bold text-emerald-900 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full">
+                  Total Payments: {payments.length}
+                </span>
+              </div>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={paymentSearch}
+                  onChange={(e) => setPaymentSearch(e.target.value)}
+                  placeholder="Search payments by Patient Name, Mobile, or Booking ID..."
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/50 pl-10 pr-4 py-2 text-xs font-medium outline-none focus:border-cyan-500 focus:bg-white"
+                />
+              </div>
+
+              <select
+                value={paymentMethodFilter}
+                onChange={(e) => setPaymentMethodFilter(e.target.value)}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 outline-none"
+              >
+                <option value="all">All Payment Methods</option>
+                <option value="Cash">Cash</option>
+                <option value="UPI">UPI</option>
+                <option value="Card">Card</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+              </select>
+
+              {paymentSearch && (
+                <button
+                  type="button"
+                  onClick={() => setPaymentSearch('')}
+                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {/* Reconciled Payments Table */}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 text-slate-400 font-extrabold uppercase tracking-wider">
-                    <th className="py-3 px-3">Order ID</th>
-                    <th className="py-3 px-3">Reference</th>
+                    <th className="py-3 px-3">Booking ID</th>
+                    <th className="py-3 px-3">Patient Name</th>
+                    <th className="py-3 px-3">Mobile Number</th>
                     <th className="py-3 px-3">Amount</th>
-                    <th className="py-3 px-3">Payment ID</th>
+                    <th className="py-3 px-3">Payment Method</th>
                     <th className="py-3 px-3">Status</th>
                     <th className="py-3 px-3">Timestamp</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {payments.length === 0 ? (
+                  {payments
+                    .filter((p) => {
+                      const q = paymentSearch.trim().toLowerCase()
+                      const matchSearch =
+                        !q ||
+                        p.bookingReference?.toLowerCase().includes(q) ||
+                        p.patientName?.toLowerCase().includes(q) ||
+                        p.mobileNumber?.includes(q) ||
+                        p.testOrPackageName?.toLowerCase().includes(q)
+
+                      const matchMethod =
+                        paymentMethodFilter === 'all' ||
+                        p.paymentMethod?.toLowerCase() === paymentMethodFilter.toLowerCase()
+
+                      return matchSearch && matchMethod
+                    })
+                    .map((p) => (
+                      <tr key={p._id} className="hover:bg-slate-50/60 transition">
+                        <td className="py-3 px-3 font-mono font-bold text-[#073b66]">
+                          {p.bookingReference || p.bookingId}
+                        </td>
+                        <td className="py-3 px-3 font-bold text-slate-900">
+                          {p.patientName || '—'}
+                          {p.testOrPackageName && (
+                            <span className="block text-[10px] text-slate-400 font-normal truncate max-w-xs">
+                              {p.testOrPackageName}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-600">
+                          {p.mobileNumber || '—'}
+                        </td>
+                        <td className="py-3 px-3 font-black text-slate-900 text-sm">
+                          ₹{p.finalAmount ?? (p.amountPaise ? (p.amountPaise / 100).toFixed(2) : '0')}
+                        </td>
+                        <td className="py-3 px-3">
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                              p.paymentMethod === 'Cash'
+                                ? 'bg-amber-100 text-amber-900 border border-amber-200'
+                                : p.paymentMethod === 'UPI'
+                                ? 'bg-blue-100 text-blue-900 border border-blue-200'
+                                : p.paymentMethod === 'Card'
+                                ? 'bg-purple-100 text-purple-900 border border-purple-200'
+                                : 'bg-slate-100 text-slate-800 border border-slate-200'
+                            }`}
+                          >
+                            {p.paymentMethod || 'Cash'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3">
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-black text-emerald-800 uppercase tracking-wider">
+                            {p.status || 'paid'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-slate-500 font-mono text-[11px]">
+                          {new Date(p.paymentDate || p.createdAt).toLocaleString('en-IN')}
+                        </td>
+                      </tr>
+                    ))}
+                  {payments.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-8 text-center text-slate-400 font-medium">
+                        No payment records found. Mark bookings as PAID or click "Sync Missing Payments".
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* TAB: REPORT DOWNLOAD LOGS                                 */}
+        {/* ========================================================= */}
+        {/*
+        {activeTab === 'downloadLogs' && (
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs space-y-6 animate-in fade-in">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-black text-[#073b66]">Diagnostic Report Download Logs</h2>
+                <p className="text-xs text-slate-500">
+                  Comprehensive audit trail of diagnostic report downloads by Patients and Administrators.
+                </p>
+              </div>
+              <span className="text-xs font-bold text-cyan-900 bg-cyan-50 border border-cyan-200 px-3 py-1 rounded-full w-fit">
+                {downloadLogs.length} Download Events
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 font-extrabold uppercase tracking-wider">
+                    <th className="py-3 px-3">Booking ID</th>
+                    <th className="py-3 px-3">Patient Name</th>
+                    <th className="py-3 px-3">Download Date</th>
+                    <th className="py-3 px-3">Download Time</th>
+                    <th className="py-3 px-3">Downloaded By</th>
+                    <th className="py-3 px-3">User Type</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {downloadLogs.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="py-8 text-center text-slate-400 font-medium">
-                        No online transactions recorded yet. Payments can also be reconciled at the desk.
+                        No report download events recorded yet.
                       </td>
                     </tr>
                   ) : (
-                    payments.map((p) => (
-                      <tr key={p._id}>
-                        <td className="py-3 px-3 font-mono font-bold text-slate-900">{p.razorpayOrderId}</td>
-                        <td className="py-3 px-3 font-mono text-cyan-800">{p.bookingReference}</td>
-                        <td className="py-3 px-3 font-bold text-slate-900">₹{p.amountPaise / 100}</td>
-                        <td className="py-3 px-3 font-mono text-slate-500">{p.razorpayPaymentId || '—'}</td>
+                    downloadLogs.map((log) => (
+                      <tr key={log._id} className="hover:bg-slate-50/60">
+                        <td className="py-3 px-3 font-mono font-bold text-cyan-800">{log.bookingReference}</td>
+                        <td className="py-3 px-3 font-bold text-slate-900">{log.patientName}</td>
+                        <td className="py-3 px-3 text-slate-600 font-mono">{log.downloadDate}</td>
+                        <td className="py-3 px-3 text-slate-600 font-mono">{log.downloadTime}</td>
+                        <td className="py-3 px-3 font-mono text-slate-700">{log.downloadedBy}</td>
                         <td className="py-3 px-3">
-                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 uppercase">
-                            {p.status}
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                              log.userType === 'Admin' || log.userType === 'admin'
+                                ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                                : 'bg-cyan-100 text-cyan-800 border border-cyan-200'
+                            }`}
+                          >
+                            {log.userType}
                           </span>
-                        </td>
-                        <td className="py-3 px-3 text-slate-500">
-                          {new Date(p.createdAt).toLocaleString()}
                         </td>
                       </tr>
                     ))
@@ -2795,6 +3133,7 @@ export function AdminDashboardPage() {
             </div>
           </div>
         )}
+        */}
 
         {/* ========================================================= */}
         {/* TAB 7: ENQUIRIES                                          */}
@@ -2848,6 +3187,7 @@ export function AdminDashboardPage() {
         {/* ========================================================= */}
         {/* TAB 8: AUDIT TRAIL                                        */}
         {/* ========================================================= */}
+        {/*
         {activeTab === 'audit' && (
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs space-y-6 animate-in fade-in">
             <h2 className="text-xl font-black text-[#073b66]">Regulatory & Security Audit Trail</h2>
@@ -2885,6 +3225,8 @@ export function AdminDashboardPage() {
             </div>
           </div>
         )}
+        */
+      }
       </main>
 
       {/* MODAL: CREATE / EDIT TEST */}
@@ -3367,6 +3709,184 @@ export function AdminDashboardPage() {
                   className="rounded-xl bg-cyan-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-cyan-700 disabled:opacity-50"
                 >
                   {uploadBusy ? 'Encrypting & Uploading...' : 'Upload & Release Report'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: PAYMENT METHOD SELECTION */}
+      {paymentModalOpen && paymentBooking && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => e.target === e.currentTarget && setPaymentModalOpen(false)}
+        >
+          <div className="modal-panel p-6 sm:p-8 space-y-5 max-w-md animate-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-[#073b66]">Select Payment Method</h3>
+                <p className="text-xs text-slate-500">
+                  Confirm receipt of payment for booking{' '}
+                  <span className="font-mono font-bold text-cyan-800">{paymentBooking.reference}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaymentModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Booking Details Card */}
+            <div className="rounded-2xl bg-cyan-50/70 p-4 border border-cyan-200/80 space-y-2 text-xs">
+              <div className="flex justify-between py-1 border-b border-cyan-200/40">
+                <span className="text-slate-600 font-medium">Patient:</span>
+                <span className="font-bold text-slate-900">
+                  {paymentBooking.patientName} ({paymentBooking.phone})
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-cyan-200/40">
+                <span className="text-slate-600 font-medium">Tests / Packages:</span>
+                <span className="font-bold text-slate-800 text-right max-w-[200px] truncate">
+                  {paymentBooking.items?.map((i) => i.name).join(', ') || 'Diagnostic Tests'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1 items-center pt-2">
+                <span className="text-slate-700 font-black uppercase tracking-wider text-[11px]">
+                  Total Amount Due:
+                </span>
+                <span className="text-xl font-black text-[#073b66]">
+                  ₹{(paymentBooking.totalAmountPaise || 0) / 100}
+                </span>
+              </div>
+            </div>
+
+            {/* Payment Method Radio Options */}
+            <form onSubmit={handleConfirmPayment} className="space-y-4">
+              <div className="space-y-2">
+                <label className="field-label">
+                  Select Payment Method <span className="text-red-500">*</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {['Cash', 'UPI', 'Card', 'Bank Transfer'].map((method) => (
+                    <label
+                      key={method}
+                      className={`flex items-center gap-2.5 rounded-xl border p-3 cursor-pointer transition ${
+                        selectedPaymentMethod === method
+                          ? 'border-cyan-600 bg-cyan-50/60 shadow-xs ring-1 ring-cyan-500'
+                          : 'border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value={method}
+                        checked={selectedPaymentMethod === method}
+                        onChange={() => setSelectedPaymentMethod(method)}
+                        className="text-cyan-600 focus:ring-cyan-500"
+                      />
+                      <span className="text-xs font-bold text-slate-800">{method}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="field-label">Reference / Transaction Notes (Optional)</label>
+                <input
+                  type="text"
+                  value={paymentNotes}
+                  onChange={(e) => setPaymentNotes(e.target.value)}
+                  placeholder="e.g. UPI Ref / Cash receipt / Desk note"
+                  className="field text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={paymentBusy || !selectedPaymentMethod}
+                  className="rounded-xl bg-[#073b66] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#062d4e] shadow-md transition disabled:opacity-50"
+                >
+                  {paymentBusy ? 'Recording...' : `Confirm & Mark as PAID (${selectedPaymentMethod})`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: REPLACE REPORT */}
+      {replaceReportModalOpen && replacingReport && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => e.target === e.currentTarget && setReplaceReportModalOpen(false)}
+        >
+          <div className="modal-panel p-6 sm:p-8 space-y-5 max-w-lg animate-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-[#073b66]">Replace Diagnostic Report</h3>
+                <p className="text-xs text-slate-500">
+                  Update file for booking{' '}
+                  <span className="font-mono font-bold text-cyan-800">{replacingReport.bookingReference}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplaceReportModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-700 border border-slate-200 space-y-1">
+              <div><strong>Patient:</strong> {replacingReport.patientName}</div>
+              <div><strong>Current File:</strong> <span className="font-mono">{replacingReport.fileName}</span> ({Math.round(replacingReport.fileSizeBytes / 1024)} KB)</div>
+            </div>
+
+            <form onSubmit={handleReplaceReportSubmit} className="space-y-4">
+              <div>
+                <label className="field-label">
+                  New Report File (PDF, JPG, PNG - Max 10MB) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="file"
+                  required
+                  accept=".pdf,image/jpeg,image/png"
+                  onChange={(e) => setReplaceFile(e.target.files?.[0] || null)}
+                  className="field p-2 text-xs"
+                />
+              </div>
+
+              <div className="rounded-xl bg-amber-50 p-3 text-[11px] text-amber-800 border border-amber-200">
+                Note: Replacing this report will securely remove the old file from storage, update the checksum, and log an audit entry.
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setReplaceReportModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={replaceBusy || !replaceFile}
+                  className="rounded-xl bg-amber-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {replaceBusy ? 'Replacing...' : 'Upload & Replace Report'}
                 </button>
               </div>
             </form>

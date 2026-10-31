@@ -14,8 +14,15 @@ import { Payment } from '../models/Payment.js'
 import { Enquiry } from '../models/Enquiry.js'
 import { AuditLog } from '../models/AuditLog.js'
 import { Doctor } from '../models/Doctor.js'
+import { DownloadLog } from '../models/DownloadLog.js'
 import { recordAudit } from '../services/auditService.js'
-import { savePrivateReportFile, deletePrivateReportFile } from '../services/storageService.js'
+import {
+  savePrivateReportFile,
+  deletePrivateReportFile,
+  getReportStream,
+  reportFileExists,
+} from '../services/storageService.js'
+import { syncPaidBookingsMigration } from '../services/paymentMigrationService.js'
 
 export const adminRouter = express.Router()
 
@@ -275,7 +282,7 @@ adminRouter.patch('/admin/bookings/:id/phlebotomist', requireAdmin, async (req, 
 
 adminRouter.patch('/admin/bookings/:id/payment', requireAdmin, async (req, res, next) => {
   try {
-    const { paymentStatus, notes } = req.body || {}
+    const { paymentStatus, paymentMethod, notes } = req.body || {}
     const valid = ['not_started', 'pending', 'paid', 'failed', 'refunded']
     if (!valid.includes(paymentStatus)) {
       return res.status(400).json({ message: 'Invalid payment status.' })
@@ -284,22 +291,139 @@ adminRouter.patch('/admin/bookings/:id/payment', requireAdmin, async (req, res, 
     const booking = await Booking.findById(req.params.id)
     if (!booking) return res.status(404).json({ message: 'Booking not found.' })
 
+    let normalizedMethod = paymentMethod?.trim()
+    if (paymentStatus === 'paid') {
+      const allowedMethods = ['Cash', 'UPI', 'Card', 'Bank Transfer']
+      const matched = allowedMethods.find(
+        (m) => m.toLowerCase() === (normalizedMethod || '').toLowerCase()
+      )
+      if (!matched) {
+        return res.status(400).json({
+          message: 'Payment method is required when marking as PAID. Options: Cash, UPI, Card, Bank Transfer.',
+        })
+      }
+      normalizedMethod = matched
+    }
+
     booking.paymentStatus = paymentStatus
-    if (paymentStatus === 'paid') booking.paidAt = new Date()
-    if (notes) booking.adminNotes = `${booking.adminNotes ? booking.adminNotes + ' | ' : ''}Payment updated: ${notes}`
+    if (paymentStatus === 'paid') {
+      booking.paidAt = new Date()
+    }
+    if (notes) {
+      booking.adminNotes = `${booking.adminNotes ? booking.adminNotes + ' | ' : ''}Payment updated: ${notes}`
+    }
     await booking.save()
 
-    await recordAudit({
-      action: 'booking_payment_reconciled',
-      category: 'payment',
-      performedBy: req.admin.email,
-      targetId: String(booking._id),
-      targetReference: booking.reference,
-      details: { paymentStatus, notes },
-      req,
-    })
+    let paymentRecord = null
+    if (paymentStatus === 'paid') {
+      const testOrPackageName =
+        booking.items && booking.items.length > 0
+          ? booking.items.map((i) => i.name).join(', ')
+          : 'Diagnostic Test'
 
-    res.json({ message: 'Payment status updated.', booking })
+      const originalAmount =
+        (booking.originalPricePaise || booking.subtotalPaise || booking.totalAmountPaise || 0) / 100
+      const discountAmount =
+        (booking.discountAmountPaise || booking.offerDiscountPaise || 0) / 100
+      const finalAmount = (booking.totalAmountPaise || 0) / 100
+      const paymentDate = new Date()
+
+      // Prevent duplicate entries - find existing record or create new
+      let existingPayment = await Payment.findOne({ bookingId: booking._id })
+
+      if (existingPayment) {
+        existingPayment.patientName = booking.patientName
+        existingPayment.mobileNumber = booking.phone
+        existingPayment.testOrPackageName = testOrPackageName
+        existingPayment.originalAmount = originalAmount
+        existingPayment.discountAmount = discountAmount
+        existingPayment.finalAmount = finalAmount
+        existingPayment.amountPaise = booking.totalAmountPaise || 0
+        existingPayment.paymentMethod = normalizedMethod
+        existingPayment.status = 'paid'
+        existingPayment.paymentDate = paymentDate
+        existingPayment.reconciled = true
+        existingPayment.reconciledAt = paymentDate
+        existingPayment.reconciledBy = req.admin.email
+        if (notes) existingPayment.notes = notes
+        await existingPayment.save()
+        paymentRecord = existingPayment
+      } else {
+        paymentRecord = await Payment.create({
+          bookingId: booking._id,
+          bookingReference: booking.reference,
+          patientName: booking.patientName,
+          mobileNumber: booking.phone,
+          testOrPackageName,
+          originalAmount,
+          discountAmount,
+          finalAmount,
+          amountPaise: booking.totalAmountPaise || 0,
+          currency: 'INR',
+          paymentMethod: normalizedMethod,
+          status: 'paid',
+          paymentDate,
+          reconciled: true,
+          reconciledAt: paymentDate,
+          reconciledBy: req.admin.email,
+          notes: notes || 'Reconciled at admin desk',
+        })
+      }
+
+      // Audit Log 1: Payment Received
+      await recordAudit({
+        action: `Payment received for Booking ID ${booking.reference}`,
+        category: 'payment',
+        performedBy: req.admin.email,
+        targetId: String(paymentRecord._id),
+        targetReference: booking.reference,
+        details: {
+          bookingId: String(booking._id),
+          finalAmount,
+          paymentMethod: normalizedMethod,
+          patientName: booking.patientName,
+        },
+        req,
+      })
+
+      // Audit Log 2: Payment Method Selected
+      await recordAudit({
+        action: `Payment method selected: ${normalizedMethod} for Booking ID ${booking.reference}`,
+        category: 'payment',
+        performedBy: req.admin.email,
+        targetId: String(paymentRecord._id),
+        targetReference: booking.reference,
+        details: {
+          paymentMethod: normalizedMethod,
+          bookingReference: booking.reference,
+        },
+        req,
+      })
+    } else {
+      // If changing to pending/failed/etc., update existing payment record status if present
+      const existingPayment = await Payment.findOne({ bookingId: booking._id })
+      if (existingPayment) {
+        existingPayment.status = paymentStatus === 'pending' ? 'pending' : 'failed'
+        await existingPayment.save()
+        paymentRecord = existingPayment
+      }
+
+      await recordAudit({
+        action: `Payment status changed to ${paymentStatus} for Booking ID ${booking.reference}`,
+        category: 'payment',
+        performedBy: req.admin.email,
+        targetId: String(booking._id),
+        targetReference: booking.reference,
+        details: { paymentStatus, notes },
+        req,
+      })
+    }
+
+    res.json({
+      message: `Payment status updated to ${paymentStatus}.`,
+      booking,
+      payment: paymentRecord,
+    })
   } catch (err) {
     next(err)
   }
@@ -654,12 +778,16 @@ adminRouter.post('/admin/reports/upload', requireAdmin, upload.single('reportFil
     await booking.save()
 
     await recordAudit({
-      action: 'report_uploaded',
+      action: `Report uploaded for Booking ID ${booking.reference}`,
       category: 'report',
       performedBy: req.admin.email,
       targetId: String(report._id),
       targetReference: booking.reference,
-      details: { fileName: req.file.originalname, fileSizeBytes: storageResult.fileSizeBytes },
+      details: {
+        message: `Report uploaded for Booking ID ${booking.reference}`,
+        fileName: req.file.originalname,
+        fileSizeBytes: storageResult.fileSizeBytes,
+      },
       req,
     })
 
@@ -677,6 +805,141 @@ adminRouter.get('/admin/reports', requireAdmin, async (_req, res, next) => {
   try {
     const reports = await Report.find().sort({ createdAt: -1 }).limit(100).lean()
     res.json({ reports })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// GET /api/admin/reports/:id/view - Admin stream view report inline (regardless of payment status)
+adminRouter.get('/admin/reports/:id/view', requireAdmin, async (req, res, next) => {
+  try {
+    const report = await Report.findById(req.params.id)
+    if (!report) return res.status(404).json({ message: 'Report not found.' })
+
+    if (!reportFileExists(report.storageKey)) {
+      return res.status(404).json({ message: 'Report file missing from secure storage.' })
+    }
+
+    res.setHeader('Content-Type', report.mimeType || 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="UniquePathology_${report.bookingReference}.pdf"`)
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+
+    const fileStream = getReportStream(report.storageKey)
+    fileStream.pipe(res)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// GET /api/admin/reports/:id/download - Admin download report as attachment (regardless of payment status)
+adminRouter.get('/admin/reports/:id/download', requireAdmin, async (req, res, next) => {
+  try {
+    const report = await Report.findById(req.params.id)
+    if (!report) return res.status(404).json({ message: 'Report not found.' })
+
+    if (!reportFileExists(report.storageKey)) {
+      return res.status(404).json({ message: 'Report file missing from secure storage.' })
+    }
+
+    const now = new Date()
+    const downloadDate = now.toISOString().slice(0, 10)
+    const downloadTime = now.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    })
+
+    // Record DownloadLog
+    await DownloadLog.create({
+      bookingId: report.bookingId,
+      bookingReference: report.bookingReference,
+      patientName: report.patientName,
+      downloadDate,
+      downloadTime,
+      downloadedBy: req.admin.email,
+      userType: 'Admin',
+      reportId: report._id,
+      ip: String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').split(',')[0],
+      userAgent: req.headers['user-agent'] || '',
+    })
+
+    // Record AuditLog
+    await recordAudit({
+      action: `Report downloaded for Booking ID ${report.bookingReference}`,
+      category: 'report',
+      performedBy: req.admin.email,
+      targetId: String(report.bookingId),
+      targetReference: report.bookingReference,
+      details: {
+        message: `Report downloaded for Booking ID ${report.bookingReference}`,
+        fileName: report.fileName,
+        userType: 'Admin',
+      },
+      req,
+    })
+
+    res.setHeader('Content-Type', report.mimeType || 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="UniquePathology_${report.bookingReference}.pdf"`)
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+
+    const fileStream = getReportStream(report.storageKey)
+    fileStream.pipe(res)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/admin/reports/:id/replace - Admin replace existing report file (regardless of payment status)
+adminRouter.post('/admin/reports/:id/replace', requireAdmin, upload.single('reportFile'), async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Replacement report document file (PDF, JPG, or PNG) is required.' })
+    }
+
+    const report = await Report.findById(req.params.id)
+    if (!report) return res.status(404).json({ message: 'Report not found.' })
+
+    // Delete old file
+    await deletePrivateReportFile(report.storageKey)
+
+    // Save replacement file
+    const storageResult = await savePrivateReportFile({
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    })
+
+    report.fileName = req.file.originalname
+    report.storageKey = storageResult.storageKey
+    report.fileSizeBytes = storageResult.fileSizeBytes
+    report.mimeType = req.file.mimetype
+    report.checksumSha256 = storageResult.checksumSha256
+    report.uploadedBy = req.admin.email
+    report.auditLogs.push({
+      action: 'replaced',
+      performedBy: req.admin.email,
+      ip: String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').split(',')[0],
+      userAgent: req.headers['user-agent'] || '',
+      details: `Report file replaced by admin: ${req.file.originalname}`,
+    })
+    await report.save()
+
+    await recordAudit({
+      action: `Report uploaded for Booking ID ${report.bookingReference}`,
+      category: 'report',
+      performedBy: req.admin.email,
+      targetId: String(report._id),
+      targetReference: report.bookingReference,
+      details: {
+        message: `Report replaced for Booking ID ${report.bookingReference}`,
+        fileName: req.file.originalname,
+        fileSizeBytes: storageResult.fileSizeBytes,
+      },
+      req,
+    })
+
+    res.json({ message: 'Report replaced successfully.', report })
   } catch (err) {
     next(err)
   }
@@ -711,8 +974,31 @@ adminRouter.delete('/admin/reports/:id', requireAdmin, async (req, res, next) =>
 
 adminRouter.get('/admin/payments', requireAdmin, async (_req, res, next) => {
   try {
-    const payments = await Payment.find().sort({ createdAt: -1 }).limit(100).lean()
+    const payments = await Payment.find().sort({ paymentDate: -1, createdAt: -1 }).limit(200).lean()
     res.json({ payments })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/admin/payments/sync - Migration & sync for missing payments on paid bookings
+adminRouter.post('/admin/payments/sync', requireAdmin, async (req, res, next) => {
+  try {
+    const result = await syncPaidBookingsMigration(req)
+    res.json({ message: 'Payment synchronization complete.', ...result })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ==========================================
+// DOWNLOAD LOGS
+// ==========================================
+
+adminRouter.get('/admin/download-logs', requireAdmin, async (_req, res, next) => {
+  try {
+    const downloadLogs = await DownloadLog.find().sort({ createdAt: -1 }).limit(200).lean()
+    res.json({ downloadLogs })
   } catch (err) {
     next(err)
   }

@@ -1,5 +1,7 @@
 import express from 'express'
 import { Report } from '../models/Report.js'
+import { Booking } from '../models/Booking.js'
+import { DownloadLog } from '../models/DownloadLog.js'
 import { otpLimiter } from '../middleware/rateLimiter.js'
 import { createOtpForPatient, verifyPatientOtp } from '../services/otpService.js'
 import {
@@ -109,38 +111,67 @@ reportRouter.post('/reports/verify-otp', otpLimiter, async (req, res, next) => {
       return res.status(400).json({ message: verification.reason })
     }
 
-    // Generate short-lived download token
-    const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').split(',')[0]
-    const { token, expiresAt } = generateDownloadToken()
+    // Verify booking payment status
+    const booking =
+      (await Booking.findOne({ reference: ref })) ||
+      (report.bookingId ? await Booking.findById(report.bookingId) : null)
 
-    report.activeDownloadToken = {
-      token,
-      expiresAt,
-      issuedToIp: clientIp,
+    const paymentStatus = booking?.paymentStatus || 'pending'
+    const isPaid = paymentStatus === 'paid'
+
+    const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').split(',')[0]
+    let token = null
+    let expiresAt = null
+
+    if (isPaid) {
+      // Generate short-lived download token only when payment is paid
+      const generated = generateDownloadToken()
+      token = generated.token
+      expiresAt = generated.expiresAt
+
+      report.activeDownloadToken = {
+        token,
+        expiresAt,
+        issuedToIp: clientIp,
+      }
+
+      report.auditLogs.push({
+        action: 'token_issued',
+        performedBy: 'patient',
+        ip: clientIp,
+        userAgent: req.headers['user-agent'] || '',
+        details: 'OTP verified successfully; short-lived download token issued',
+      })
+      await report.save()
+
+      await recordAudit({
+        action: 'report_token_issued',
+        category: 'report',
+        performedBy: 'patient',
+        targetId: String(report._id),
+        targetReference: report.bookingReference,
+        req,
+      })
+    } else {
+      // Payment is pending
+      report.auditLogs.push({
+        action: 'otp_verified',
+        performedBy: 'patient',
+        ip: clientIp,
+        userAgent: req.headers['user-agent'] || '',
+        details: 'OTP verified, but report download locked due to pending payment status',
+      })
+      await report.save()
     }
 
-    report.auditLogs.push({
-      action: 'token_issued',
-      performedBy: 'patient',
-      ip: clientIp,
-      userAgent: req.headers['user-agent'] || '',
-      details: 'OTP verified successfully; short-lived download token issued',
-    })
-    await report.save()
-
-    await recordAudit({
-      action: 'report_token_issued',
-      category: 'report',
-      performedBy: 'patient',
-      targetId: String(report._id),
-      targetReference: report.bookingReference,
-      req,
-    })
-
     res.json({
-      message: 'Verification successful. Your report is ready to download.',
+      message: isPaid
+        ? 'Verification successful. Your report is ready to download.'
+        : 'Payment Pending. Please clear payment before downloading the report.',
       downloadToken: token,
       expiresAt,
+      paymentStatus,
+      isPaymentPending: !isPaid,
       reportInfo: {
         reportTitle: report.reportTitle,
         patientName: report.patientName,
@@ -149,6 +180,8 @@ reportRouter.post('/reports/verify-otp', otpLimiter, async (req, res, next) => {
         fileSizeBytes: report.fileSizeBytes,
         mimeType: report.mimeType,
         verifiedBy: report.verifiedByPathologistName,
+        paymentStatus,
+        isPaymentPending: !isPaid,
       },
     })
   } catch (err) {
@@ -180,6 +213,19 @@ reportRouter.get('/reports/download/:token', async (req, res, next) => {
       })
     }
 
+    // Backend validation of Payment Status
+    const booking =
+      (await Booking.findOne({ reference: report.bookingReference })) ||
+      (report.bookingId ? await Booking.findById(report.bookingId) : null)
+
+    if (!booking || booking.paymentStatus !== 'paid') {
+      return res.status(402).json({
+        error: 'PaymentRequired',
+        message: 'Payment Pending. Please clear payment before downloading the report.',
+        paymentStatus: booking?.paymentStatus || 'pending',
+      })
+    }
+
     if (!reportFileExists(report.storageKey)) {
       return res.status(404).json({
         message: 'The requested report file is temporarily unavailable on server storage. Please contact the centre.',
@@ -189,7 +235,7 @@ reportRouter.get('/reports/download/:token', async (req, res, next) => {
     const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '127.0.0.1').split(',')[0]
     const userAgent = req.headers['user-agent'] || 'unknown'
 
-    // Log the download event in audit logs
+    // Log the download event in report audit logs
     report.auditLogs.push({
       action: 'downloaded',
       performedBy: 'patient',
@@ -202,12 +248,41 @@ reportRouter.get('/reports/download/:token', async (req, res, next) => {
     report.activeDownloadToken = undefined
     await report.save()
 
+    const now = new Date()
+    const downloadDate = now.toISOString().slice(0, 10)
+    const downloadTime = now.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    })
+
+    // Create DownloadLog entry
+    await DownloadLog.create({
+      bookingId: report.bookingId,
+      bookingReference: report.bookingReference,
+      patientName: report.patientName,
+      downloadDate,
+      downloadTime,
+      downloadedBy: report.patientPhone,
+      userType: 'Patient',
+      reportId: report._id,
+      ip: clientIp,
+      userAgent,
+    })
+
+    // Create system AuditLog entry
     await recordAudit({
-      action: 'report_downloaded',
+      action: `Report downloaded for Booking ID ${report.bookingReference}`,
       category: 'report',
-      performedBy: 'patient',
-      targetId: String(report._id),
+      performedBy: report.patientPhone,
+      targetId: String(report.bookingId),
       targetReference: report.bookingReference,
+      details: {
+        message: `Report downloaded for Booking ID ${report.bookingReference}`,
+        fileName: report.fileName,
+        userType: 'Patient',
+      },
       req,
     })
 

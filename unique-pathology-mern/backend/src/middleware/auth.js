@@ -3,7 +3,7 @@ import { config } from '../config/index.js'
 import { Doctor } from '../models/Doctor.js'
 
 export function requireAdmin(req, res, next) {
-  const authHeader = req.headers.authorization
+  const authHeader = req.headers.authorization || (req.query.token ? `Bearer ${req.query.token}` : null)
   if (!authHeader) {
     return res.status(401).json({ message: 'Authentication token required.' })
   }
