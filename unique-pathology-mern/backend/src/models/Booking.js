@@ -7,6 +7,9 @@ const bookingItemSchema = new mongoose.Schema(
     name: { type: String, required: true },
     code: { type: String },
     pricePaise: { type: Number, required: true, min: 0 },
+    mrpPaise: { type: Number, default: 0, min: 0 },
+    discountPaise: { type: Number, default: 0, min: 0 },
+    finalPricePaise: { type: Number, default: 0, min: 0 },
     isVerifiedPrice: { type: Boolean, default: false },
   },
   { _id: false }
@@ -43,9 +46,24 @@ const bookingSchema = new mongoose.Schema(
       type: [bookingItemSchema],
       validate: [v => Array.isArray(v) && v.length > 0, 'At least one test or package must be selected.'],
     },
+    // Pricing snapshots & balances (in paise)
+    originalMrpPaise: { type: Number, default: 0, min: 0 },
     subtotalPaise: { type: Number, default: 0, min: 0 },
     discountAmountPaise: { type: Number, default: 0, min: 0 },
     totalAmountPaise: { type: Number, required: true, min: 0 },
+    amountPaidPaise: { type: Number, default: 0, min: 0 },
+    amountRefundedPaise: { type: Number, default: 0, min: 0 },
+    outstandingAmountPaise: { type: Number, default: 0, min: 0 },
+    authorizedServicePaymentPaise: { type: Number, default: 0, min: 0 },
+    settlementStatus: {
+      type: String,
+      enum: ['pending', 'partially_settled', 'settled', 'waived'],
+      default: 'pending',
+      index: true,
+    },
+    settledAt: { type: Date },
+    settledBy: { type: String, trim: true },
+    settlementNotes: { type: String, trim: true, maxlength: 500 },
     hasUnverifiedPrices: { type: Boolean, default: false },
 
     // Offer / Campaign integration

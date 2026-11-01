@@ -1,4 +1,6 @@
 import express from 'express'
+import mongoose from 'mongoose'
+import crypto from 'node:crypto'
 import multer from 'multer'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
@@ -15,6 +17,7 @@ import { Enquiry } from '../models/Enquiry.js'
 import { AuditLog } from '../models/AuditLog.js'
 import { Doctor } from '../models/Doctor.js'
 import { DownloadLog } from '../models/DownloadLog.js'
+import { FinancialLedger } from '../models/FinancialLedger.js'
 import { recordAudit } from '../services/auditService.js'
 import {
   savePrivateReportFile,
@@ -198,6 +201,1068 @@ adminRouter.get('/admin/metrics', requireAdmin, async (_req, res, next) => {
 })
 
 // ==========================================
+// DOCTOR REFERRALS, FINANCIAL LEDGER & STATEMENTS
+// ==========================================
+
+function computeBookingFinancials(booking) {
+  let originalMrpPaise =
+    booking.originalMrpPaise && booking.originalMrpPaise > 0
+      ? booking.originalMrpPaise
+      : booking.subtotalPaise && booking.subtotalPaise > 0
+      ? booking.subtotalPaise
+      : 0
+
+  if (!originalMrpPaise && Array.isArray(booking.items) && booking.items.length > 0) {
+    originalMrpPaise = booking.items.reduce((sum, it) => sum + (it.mrpPaise || it.pricePaise || 0), 0)
+  }
+
+  const doctorDiscountPaise = Math.max(0, booking.discountAmountPaise || 0)
+
+  if (!originalMrpPaise) {
+    originalMrpPaise = Math.max(0, (booking.totalAmountPaise || 0) + doctorDiscountPaise)
+  }
+
+  const patientPayablePaise =
+    booking.totalAmountPaise !== undefined && booking.totalAmountPaise !== null
+      ? booking.totalAmountPaise
+      : Math.max(0, originalMrpPaise - doctorDiscountPaise)
+
+  const patientPaidPaise =
+    booking.amountPaidPaise !== undefined && booking.amountPaidPaise !== null
+      ? booking.amountPaidPaise
+      : booking.paymentStatus === 'paid'
+      ? patientPayablePaise
+      : 0
+
+  const amountRefundedPaise = Math.max(0, booking.amountRefundedPaise || 0)
+  const netReceiptsPaise = Math.max(0, patientPaidPaise - amountRefundedPaise)
+
+  const patientOutstandingPaise =
+    booking.outstandingAmountPaise !== undefined && booking.outstandingAmountPaise !== null
+      ? Math.max(0, booking.outstandingAmountPaise)
+      : Math.max(0, patientPayablePaise - patientPaidPaise + amountRefundedPaise)
+
+  const authorizedServicePaise = Math.max(0, booking.authorizedServicePaymentPaise || 0)
+  const netRetainedPaise = Math.max(0, netReceiptsPaise - authorizedServicePaise)
+
+  return {
+    originalMrpPaise,
+    totalMrpPaise: originalMrpPaise,
+    doctorDiscountPaise,
+    discountAmountPaise: doctorDiscountPaise,
+    discountPercent: originalMrpPaise > 0 ? Math.round((doctorDiscountPaise / originalMrpPaise) * 100) : 0,
+    patientPayablePaise,
+    totalPayablePaise: patientPayablePaise,
+    patientPaidPaise,
+    totalPaidPaise: patientPaidPaise,
+    patientOutstandingPaise,
+    totalOutstandingPaise: patientOutstandingPaise,
+    amountRefundedPaise,
+    patientRefundedPaise: amountRefundedPaise,
+    totalRefundedPaise: amountRefundedPaise,
+    authorizedServicePaise,
+    authorizedServicePaymentPaise: authorizedServicePaise,
+    totalAuthorizedServicePaymentPaise: authorizedServicePaise,
+    netReceiptsPaise,
+    labNetReceiptsPaise: netReceiptsPaise,
+    netRetainedPaise,
+    labNetRetainedPaise: netRetainedPaise,
+    totalLabNetRetainedPaise: netRetainedPaise,
+  }
+}
+
+// 1. Referral Records Ledger (All Referred Patients Across Doctors)
+adminRouter.get('/admin/referrals', requireAdmin, async (req, res, next) => {
+  try {
+    const {
+      doctorId,
+      search,
+      bookingId,
+      startDate,
+      endDate,
+      testOrPackage,
+      status,
+      paymentStatus,
+      settlementStatus,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      page = 1,
+      limit = 50,
+    } = req.query
+
+    const query = {
+      $or: [
+        { doctorId: { $ne: null } },
+        { doctorName: { $exists: true, $ne: '' } },
+        { referredBy: 'doctor' },
+      ],
+    }
+
+    if (doctorId && doctorId !== 'all') {
+      query.doctorId = doctorId
+    }
+
+    if (bookingId && typeof bookingId === 'string' && bookingId.trim()) {
+      query.reference = new RegExp(bookingId.trim(), 'i')
+    }
+
+    if (startDate && endDate) {
+      query.date = { $gte: String(startDate), $lte: String(endDate) }
+    } else if (startDate) {
+      query.date = { $gte: String(startDate) }
+    } else if (endDate) {
+      query.date = { $lte: String(endDate) }
+    }
+
+    if (status && status !== 'all') {
+      query.status = status
+    }
+
+    if (paymentStatus && paymentStatus !== 'all') {
+      query.paymentStatus = paymentStatus
+    }
+
+    if (settlementStatus && settlementStatus !== 'all') {
+      query.settlementStatus = settlementStatus
+    }
+
+    if (testOrPackage && testOrPackage.trim()) {
+      query['items.name'] = new RegExp(testOrPackage.trim(), 'i')
+    }
+
+    if (search && search.trim()) {
+      const term = search.trim()
+      const regex = new RegExp(term, 'i')
+      query.$and = [
+        {
+          $or: [
+            { reference: regex },
+            { patientName: regex },
+            { phone: regex },
+            { doctorName: regex },
+            { 'items.name': regex },
+          ],
+        },
+      ]
+    }
+
+    const sortOption = {}
+    const order = sortOrder === 'asc' ? 1 : -1
+    if (sortBy === 'date') {
+      sortOption.date = order
+      sortOption.createdAt = order
+    } else if (sortBy === 'patientName') {
+      sortOption.patientName = order
+    } else if (sortBy === 'doctorName') {
+      sortOption.doctorName = order
+    } else if (sortBy === 'totalAmountPaise') {
+      sortOption.totalAmountPaise = order
+    } else {
+      sortOption.createdAt = order
+    }
+
+    const pageNum = Math.max(1, Number(page) || 1)
+    const limitNum = Math.max(1, Math.min(1000, Number(limit) || 50))
+    const skip = (pageNum - 1) * limitNum
+
+    // Aggregate summary for all matching records
+    const allMatching = await Booking.find(query)
+      .select(
+        'originalMrpPaise subtotalPaise discountAmountPaise totalAmountPaise amountPaidPaise amountRefundedPaise outstandingAmountPaise authorizedServicePaymentPaise paymentStatus settlementStatus'
+      )
+      .lean()
+
+    let summaryOriginalMrpPaise = 0
+    let summaryDiscountPaise = 0
+    let summaryPatientPayablePaise = 0
+    let summaryPatientPaidPaise = 0
+    let summaryOutstandingPaise = 0
+    let summaryRefundPaise = 0
+    let summaryAuthorizedServicePaise = 0
+    let summaryNetReceiptsPaise = 0
+    let summaryNetRetainedPaise = 0
+
+    allMatching.forEach((b) => {
+      const fin = computeBookingFinancials(b)
+      summaryOriginalMrpPaise += fin.originalMrpPaise
+      summaryDiscountPaise += fin.doctorDiscountPaise
+      summaryPatientPayablePaise += fin.patientPayablePaise
+      summaryPatientPaidPaise += fin.patientPaidPaise
+      summaryOutstandingPaise += fin.patientOutstandingPaise
+      summaryRefundPaise += fin.amountRefundedPaise
+      summaryAuthorizedServicePaise += fin.authorizedServicePaise
+      summaryNetReceiptsPaise += fin.netReceiptsPaise
+    })
+
+    summaryNetRetainedPaise = Math.max(0, summaryNetReceiptsPaise - summaryAuthorizedServicePaise)
+
+    const rawBookings = await Booking.find(query)
+      .populate('doctorId', 'name email mobile specialization clinicName referralCode discountPercent status')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limitNum)
+      .lean()
+
+    const bookingIds = rawBookings.map((b) => b._id)
+    const bookingRefs = rawBookings.map((b) => b.reference)
+
+    const [payments, reports, ledgers] = await Promise.all([
+      Payment.find({ bookingId: { $in: bookingIds } })
+        .sort({ paymentDate: -1, createdAt: -1 })
+        .lean(),
+      Report.find({ bookingReference: { $in: bookingRefs } }).lean(),
+      FinancialLedger.find({ bookingId: { $in: bookingIds } })
+        .sort({ createdAt: -1 })
+        .lean(),
+    ])
+
+    const paymentMap = new Map()
+    payments.forEach((p) => {
+      if (!paymentMap.has(String(p.bookingId))) {
+        paymentMap.set(String(p.bookingId), p)
+      }
+    })
+
+    const reportMap = new Map()
+    reports.forEach((r) => {
+      reportMap.set(r.bookingReference, r)
+    })
+
+    const ledgerMap = new Map()
+    ledgers.forEach((l) => {
+      const arr = ledgerMap.get(String(l.bookingId)) || []
+      arr.push(l)
+      ledgerMap.set(String(l.bookingId), arr)
+    })
+
+    const referrals = rawBookings.map((b) => {
+      const fin = computeBookingFinancials(b)
+      const latestPayment = paymentMap.get(String(b._id))
+      const rep = reportMap.get(b.reference)
+      const bookingLedger = ledgerMap.get(String(b._id)) || []
+
+      const doctorDoc = b.doctorId && typeof b.doctorId === 'object' && b.doctorId.name ? b.doctorId : null
+      const docName = (doctorDoc?.name || b.doctorName || '').trim()
+      const docId = doctorDoc?._id || (b.doctorId ? String(b.doctorId) : null)
+      const isReferredByDoctor = Boolean(docName || docId || b.referredBy === 'doctor')
+
+      const doctorData = isReferredByDoctor && (docName || docId)
+        ? {
+            _id: docId,
+            id: docId,
+            name: docName || 'Consulting Doctor',
+            email: doctorDoc?.email || '',
+            mobile: doctorDoc?.mobile || '',
+            clinicName: doctorDoc?.clinicName || '',
+            specialization: doctorDoc?.specialization || '',
+            referralCode: doctorDoc?.referralCode || '',
+            discountPercent: b.doctorDiscountPercent || doctorDoc?.discountPercent || 0,
+          }
+        : null
+
+      const patientData = {
+        name: b.patientName || 'Unknown Patient',
+        mobile: b.phone || '',
+        phone: b.phone || '',
+        email: b.email || '',
+        age: b.age,
+        gender: b.gender,
+        address: b.address || '',
+      }
+
+      return {
+        _id: b._id,
+        reference: b.reference,
+        bookingReference: b.reference,
+        doctor: doctorData,
+        doctorId: docId,
+        doctorName: doctorData ? doctorData.name : (b.referredBy === 'doctor' && docName ? docName : 'Direct / Walk-in'),
+        doctorEmail: doctorData?.email || '',
+        doctorMobile: doctorData?.mobile || '',
+        doctorClinic: doctorData?.clinicName || '',
+        doctorSpecialization: doctorData?.specialization || '',
+        referralCode: doctorData?.referralCode || '',
+        doctorDiscountPercent: doctorData?.discountPercent || b.doctorDiscountPercent || 0,
+        patient: patientData,
+        patientName: b.patientName || 'Unknown Patient',
+        phone: b.phone || '',
+        email: b.email || '',
+        age: b.age,
+        gender: b.gender,
+        date: b.date,
+        timeSlot: b.timeSlot,
+        collectionType: b.collectionType,
+        address: b.address,
+        landmark: b.landmark,
+        city: b.city,
+        pinCode: b.pinCode,
+        status: b.status,
+        paymentStatus: b.paymentStatus || 'not_started',
+        settlementStatus: b.settlementStatus || 'pending',
+        settledAt: b.settledAt,
+        settledBy: b.settledBy,
+        settlementNotes: b.settlementNotes,
+        items: b.items || [],
+        financials: fin,
+        paymentDetails: latestPayment
+          ? {
+              method: latestPayment.paymentMethod,
+              transactionReference:
+                latestPayment.razorpayPaymentId || latestPayment.cardOrVpa || latestPayment.notes || '',
+              date: latestPayment.paymentDate,
+              reconciled: latestPayment.reconciled,
+            }
+          : null,
+        reportDetails: rep
+          ? {
+              id: rep._id,
+              title: rep.reportTitle,
+              status: rep.status,
+              releasedAt: rep.releasedAt,
+            }
+          : null,
+        ledgerEntriesCount: bookingLedger.length,
+        adminNotes: b.adminNotes,
+        createdAt: b.createdAt,
+      }
+    })
+
+    res.json({
+      referrals,
+      summary: {
+        totalReferralsCount: allMatching.length,
+        totalBookings: allMatching.length,
+        totalOriginalMrpPaise: summaryOriginalMrpPaise,
+        totalMrpPaise: summaryOriginalMrpPaise,
+        totalDoctorDiscountPaise: summaryDiscountPaise,
+        totalPatientPayablePaise: summaryPatientPayablePaise,
+        totalPayablePaise: summaryPatientPayablePaise,
+        totalPatientPaidPaise: summaryPatientPaidPaise,
+        totalPaidPaise: summaryPatientPaidPaise,
+        totalOutstandingPaise: summaryOutstandingPaise,
+        totalRefundPaise: summaryRefundPaise,
+        totalRefundedPaise: summaryRefundPaise,
+        totalAuthorizedServicePaise: summaryAuthorizedServicePaise,
+        totalAuthorizedServicePaymentPaise: summaryAuthorizedServicePaise,
+        totalNetReceiptsPaise: summaryNetReceiptsPaise,
+        totalNetRetainedPaise: summaryNetRetainedPaise,
+        totalLabNetRetainedPaise: summaryNetRetainedPaise,
+      },
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: allMatching.length,
+        totalPages: Math.ceil(allMatching.length / limitNum) || 1,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 2. Single Referral Detail with Complete Audit & Ledger Trail
+adminRouter.get('/admin/referrals/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const booking = await Booking.findById(req.params.id)
+      .populate('doctorId', 'name email mobile specialization clinicName referralCode discountPercent status')
+      .lean()
+
+    if (!booking) {
+      return res.status(404).json({ message: 'Referral booking not found.' })
+    }
+
+    const [ledgerEntries, payments, auditLogs, report] = await Promise.all([
+      FinancialLedger.find({ bookingId: booking._id }).sort({ createdAt: -1 }).lean(),
+      Payment.find({ bookingId: booking._id }).sort({ paymentDate: -1, createdAt: -1 }).lean(),
+      AuditLog.find({
+        $or: [{ targetId: String(booking._id) }, { targetReference: booking.reference }],
+      })
+        .sort({ createdAt: -1 })
+        .lean(),
+      Report.findOne({ bookingReference: booking.reference }).lean(),
+    ])
+
+    const financials = computeBookingFinancials(booking)
+
+    const doctorDoc = booking.doctorId && typeof booking.doctorId === 'object' && booking.doctorId.name ? booking.doctorId : null
+    const docName = (doctorDoc?.name || booking.doctorName || '').trim()
+    const docId = doctorDoc?._id || (booking.doctorId ? String(booking.doctorId) : null)
+    const isReferredByDoctor = Boolean(docName || docId || booking.referredBy === 'doctor')
+
+    const doctorData = isReferredByDoctor && (docName || docId)
+      ? {
+          _id: docId,
+          id: docId,
+          name: docName || 'Consulting Doctor',
+          email: doctorDoc?.email || '',
+          mobile: doctorDoc?.mobile || '',
+          clinicName: doctorDoc?.clinicName || '',
+          specialization: doctorDoc?.specialization || '',
+          referralCode: doctorDoc?.referralCode || '',
+          discountPercent: booking.doctorDiscountPercent || doctorDoc?.discountPercent || 0,
+        }
+      : null
+
+    const patientData = {
+      name: booking.patientName || 'Unknown Patient',
+      mobile: booking.phone || '',
+      phone: booking.phone || '',
+      email: booking.email || '',
+      age: booking.age,
+      gender: booking.gender,
+      address: booking.address || '',
+    }
+
+    const enhancedBooking = {
+      ...booking,
+      bookingReference: booking.reference,
+      doctor: doctorData,
+      doctorId: docId,
+      doctorName: doctorData ? doctorData.name : (booking.referredBy === 'doctor' && docName ? docName : 'Direct / Walk-in'),
+      patient: patientData,
+      patientName: booking.patientName || 'Unknown Patient',
+    }
+
+    res.json({
+      booking: enhancedBooking,
+      financials,
+      ledgerEntries,
+      payments,
+      auditLogs,
+      report,
+      referral: {
+        ...enhancedBooking,
+        financials,
+        ledgerEntries,
+        payments,
+        auditLogs,
+        report,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 3. Record Verified Patient Payment
+adminRouter.post('/admin/referrals/:id/payment', requireAdmin, async (req, res, next) => {
+  try {
+    const { amount, amountPaise: rawAmountPaise, paymentMethod = 'Cash', transactionReference, notes } = req.body || {}
+
+    const amountNum = rawAmountPaise !== undefined ? (Number(rawAmountPaise) / 100) : Number(amount)
+    if (!amountNum || amountNum <= 0) {
+      return res.status(400).json({ message: 'Valid payment amount greater than zero is required.' })
+    }
+
+    const booking = await Booking.findById(req.params.id)
+    if (!booking) {
+      return res.status(404).json({ message: 'Referral booking not found.' })
+    }
+
+    const amountPaise = Math.round(amountNum * 100)
+    const originalMrp =
+      booking.originalMrpPaise && booking.originalMrpPaise > 0
+        ? booking.originalMrpPaise
+        : booking.subtotalPaise || booking.totalAmountPaise || 0
+
+    const currentPaid = booking.amountPaidPaise || (booking.paymentStatus === 'paid' ? booking.totalAmountPaise : 0)
+    const newPaidPaise = currentPaid + amountPaise
+    const currentRefunds = booking.amountRefundedPaise || 0
+    const newOutstandingPaise = Math.max(0, booking.totalAmountPaise - (newPaidPaise - currentRefunds))
+
+    booking.amountPaidPaise = newPaidPaise
+    booking.outstandingAmountPaise = newOutstandingPaise
+    booking.originalMrpPaise = originalMrp
+
+    if (newOutstandingPaise === 0) {
+      booking.paymentStatus = 'paid'
+      booking.paidAt = new Date()
+    } else {
+      booking.paymentStatus = 'pending'
+    }
+
+    if (notes) {
+      booking.adminNotes = `${booking.adminNotes ? booking.adminNotes + ' | ' : ''}Payment: ${notes}`
+    }
+
+    await booking.save()
+
+    const cleanTxRef = transactionReference?.trim() || `RCP-${Date.now().toString().slice(-6)}`
+
+    // Create Immutable Ledger Entry
+    const ledgerEntry = await FinancialLedger.create({
+      bookingId: booking._id,
+      bookingReference: booking.reference,
+      doctorId: booking.doctorId || null,
+      doctorName: booking.doctorName || '',
+      patientName: booking.patientName,
+      patientPhone: booking.phone,
+      entryType: 'PATIENT_PAYMENT',
+      amountPaise,
+      paymentMethod,
+      transactionReference: cleanTxRef,
+      originalMrpPaise: originalMrp,
+      discountAmountPaise: booking.discountAmountPaise || 0,
+      patientPayablePaise: booking.totalAmountPaise,
+      recordedBy: req.admin.email,
+      notes: notes?.trim() || `Patient payment collected via ${paymentMethod}`,
+    })
+
+    // Sync Payment record for backwards compatibility
+    const testOrPackageName =
+      booking.items && booking.items.length > 0
+        ? booking.items.map((i) => i.name).join(', ')
+        : 'Diagnostic Test'
+
+    await Payment.create({
+      bookingId: booking._id,
+      bookingReference: booking.reference,
+      patientName: booking.patientName,
+      mobileNumber: booking.phone,
+      testOrPackageName,
+      originalAmount: originalMrp / 100,
+      discountAmount: (booking.discountAmountPaise || 0) / 100,
+      finalAmount: amountNum,
+      amountPaise,
+      currency: 'INR',
+      paymentMethod,
+      status: 'paid',
+      paymentDate: new Date(),
+      cardOrVpa: cleanTxRef,
+      reconciled: true,
+      reconciledAt: new Date(),
+      reconciledBy: req.admin.email,
+      notes: notes || `Reconciled ledger receipt ${cleanTxRef}`,
+    })
+
+    // Record Immutable Audit Log
+    await recordAudit({
+      action: `Patient payment of ₹${amountNum.toFixed(2)} recorded for Booking ${booking.reference}`,
+      category: 'payment',
+      performedBy: req.admin.email,
+      targetId: String(ledgerEntry._id),
+      targetReference: booking.reference,
+      details: {
+        bookingId: String(booking._id),
+        amountPaise,
+        paymentMethod,
+        transactionReference: cleanTxRef,
+        totalPaidPaise: newPaidPaise,
+        outstandingAmountPaise: newOutstandingPaise,
+      },
+      req,
+    })
+
+    res.status(201).json({
+      message: `Payment of ₹${amountNum.toFixed(2)} successfully recorded for ${booking.patientName}.`,
+      booking,
+      ledgerEntry,
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 4. Record Patient Refund (Without deleting history)
+adminRouter.post('/admin/referrals/:id/refund', requireAdmin, async (req, res, next) => {
+  try {
+    const {
+      amount,
+      refundAmountPaise,
+      amountPaise: rawAmountPaise,
+      refundMethod = 'Cash',
+      transactionReference,
+      reference,
+      justification,
+      reason,
+      notes,
+    } = req.body || {}
+
+    // 1. Validate refund amount
+    let effectiveAmountPaise
+    if (refundAmountPaise !== undefined && refundAmountPaise !== null && !isNaN(Number(refundAmountPaise))) {
+      effectiveAmountPaise = Math.round(Number(refundAmountPaise))
+    } else if (rawAmountPaise !== undefined && rawAmountPaise !== null && !isNaN(Number(rawAmountPaise))) {
+      effectiveAmountPaise = Math.round(Number(rawAmountPaise))
+    } else if (amount !== undefined && amount !== null && !isNaN(Number(amount))) {
+      effectiveAmountPaise = Math.round(Number(amount) * 100)
+    }
+
+    if (!effectiveAmountPaise || effectiveAmountPaise <= 0) {
+      return res.status(400).json({ message: 'Valid refund amount greater than zero is required.' })
+    }
+
+    const amountNum = effectiveAmountPaise / 100
+
+    // 2. Validate mandatory justification/reason
+    const effectiveJustification =
+      typeof justification === 'string' && justification.trim()
+        ? justification.trim()
+        : typeof reason === 'string' && reason.trim()
+        ? reason.trim()
+        : ''
+
+    if (!effectiveJustification || effectiveJustification.length < 3) {
+      return res.status(400).json({ message: 'A documented justification (minimum 3 characters) is required for processing refunds.' })
+    }
+
+    // 3. Find booking
+    const booking = await Booking.findById(req.params.id)
+    if (!booking) {
+      return res.status(404).json({ message: 'Referral booking not found.' })
+    }
+
+    // 4. Validate refund against actual eligible collected payments
+    const currentPaid =
+      booking.amountPaidPaise !== undefined && booking.amountPaidPaise !== null
+        ? booking.amountPaidPaise
+        : booking.paymentStatus === 'paid'
+        ? booking.totalAmountPaise
+        : 0
+    const currentRefunds = booking.amountRefundedPaise || 0
+    const maxRefundable = Math.max(0, currentPaid - currentRefunds)
+
+    if (maxRefundable <= 0) {
+      return res.status(400).json({
+        message: 'No eligible collected payments available for refund on this booking.',
+      })
+    }
+
+    if (effectiveAmountPaise > maxRefundable) {
+      return res.status(400).json({
+        message: `Refund of ₹${amountNum.toFixed(2)} exceeds net collected amount of ₹${(maxRefundable / 100).toFixed(2)}. Maximum refundable is ₹${(maxRefundable / 100).toFixed(2)}.`,
+      })
+    }
+
+    // 5. Prevent duplicate refund submission
+    const cleanTxRef =
+      typeof transactionReference === 'string' && transactionReference.trim()
+        ? transactionReference.trim()
+        : typeof reference === 'string' && reference.trim()
+        ? reference.trim()
+        : null
+
+    if (cleanTxRef) {
+      const existingTx = await FinancialLedger.findOne({
+        bookingId: booking._id,
+        entryType: 'PATIENT_REFUND',
+        transactionReference: cleanTxRef,
+      })
+      if (existingTx) {
+        return res.status(400).json({
+          message: `Duplicate refund: A refund with reference '${cleanTxRef}' has already been processed for this booking.`,
+        })
+      }
+    }
+
+    // Guard against rapid duplicate double-clicks (< 5s)
+    const recentDuplicate = await FinancialLedger.findOne({
+      bookingId: booking._id,
+      entryType: 'PATIENT_REFUND',
+      amountPaise: effectiveAmountPaise,
+      createdAt: { $gte: new Date(Date.now() - 5000) },
+    })
+    if (recentDuplicate) {
+      return res.status(400).json({
+        message: 'Duplicate refund detected: An identical refund was just processed seconds ago. Please refresh the page.',
+      })
+    }
+
+    const finalTxRef = cleanTxRef || `REF-${Date.now().toString().slice(-6)}`
+    const effectiveNotes =
+      typeof notes === 'string' && notes.trim()
+        ? notes.trim()
+        : `Refund processed: ${effectiveJustification}`
+
+    // 6. Update booking balances safely
+    const newRefundsPaise = currentRefunds + effectiveAmountPaise
+    const newOutstandingPaise = Math.max(0, booking.totalAmountPaise - (currentPaid - newRefundsPaise))
+
+    booking.amountRefundedPaise = newRefundsPaise
+    booking.outstandingAmountPaise = newOutstandingPaise
+
+    if (newRefundsPaise >= currentPaid) {
+      booking.paymentStatus = 'refunded'
+    } else {
+      booking.paymentStatus = newOutstandingPaise > 0 ? 'pending' : 'paid'
+    }
+
+    if (notes) {
+      booking.adminNotes = `${booking.adminNotes ? booking.adminNotes + ' | ' : ''}Refund: ${effectiveJustification}`
+    }
+
+    await booking.save()
+
+    // 7. Create Immutable Ledger Entry for Refund
+    const ledgerEntry = await FinancialLedger.create({
+      bookingId: booking._id,
+      bookingReference: booking.reference,
+      doctorId: booking.doctorId || null,
+      doctorName: booking.doctorName || '',
+      patientName: booking.patientName,
+      patientPhone: booking.phone,
+      entryType: 'PATIENT_REFUND',
+      amountPaise: effectiveAmountPaise,
+      paymentMethod: refundMethod,
+      transactionReference: finalTxRef,
+      recordedBy: req.admin?.email || 'admin',
+      justification: effectiveJustification,
+      notes: effectiveNotes,
+    })
+
+    // 8. Record Immutable Audit Log
+    await recordAudit({
+      action: `Patient refund of ₹${amountNum.toFixed(2)} recorded for Booking ${booking.reference}`,
+      category: 'payment',
+      performedBy: req.admin?.email || 'admin',
+      targetId: String(ledgerEntry._id),
+      targetReference: booking.reference,
+      details: {
+        bookingId: String(booking._id),
+        refundPaise: effectiveAmountPaise,
+        refundMethod,
+        justification: effectiveJustification,
+        transactionReference: finalTxRef,
+        totalRefundsPaise: newRefundsPaise,
+      },
+      req,
+    })
+
+    res.status(201).json({
+      message: `Refund of ₹${amountNum.toFixed(2)} successfully recorded for ${booking.patientName}.`,
+      booking,
+      ledgerEntry,
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 5. Record Authorized & Lawful Service/Professional Payment
+// Compliance Note: Do not automatically pay referral commissions.
+// Any permitted professional/service payment must be independently justified, documented, approved, and compliant.
+adminRouter.post('/admin/referrals/:id/service-payment', requireAdmin, async (req, res, next) => {
+  try {
+    const {
+      amount,
+      amountPaise: rawAmountPaise,
+      serviceCategory,
+      category,
+      justification,
+      legalJustification,
+      approvalReference,
+      agreementRef,
+      paymentMethod = 'Bank Transfer',
+      transactionReference,
+      paymentReference,
+      notes,
+    } = req.body || {}
+
+    const amountNum = rawAmountPaise !== undefined ? (Number(rawAmountPaise) / 100) : Number(amount)
+    if (!amountNum || amountNum <= 0) {
+      return res.status(400).json({ message: 'Valid professional service payment amount is required.' })
+    }
+
+    const effectiveCategory = category || serviceCategory
+    const validCategories = [
+      'CLINICAL_SPECIMEN_COLLECTION',
+      'POST_DIAGNOSTIC_CONSULTATION',
+      'SPECIALIZED_HOME_VISIT',
+      'SPECIALIST_SAMPLE_PREPARATION',
+      'EQUIPMENT_FACILITY_PROVISION',
+      'OTHER_DOCUMENTED_CLINICAL_SERVICE',
+      'OTHER_LAWFUL_SERVICE',
+    ]
+
+    if (!validCategories.includes(effectiveCategory)) {
+      return res.status(400).json({
+        message: 'A valid authorized clinical/service category is required.',
+      })
+    }
+
+    const effectiveJustification = (justification || legalJustification || '').trim()
+    if (!effectiveJustification || effectiveJustification.length < 10) {
+      return res.status(400).json({
+        message: 'An independent legal/clinical justification of at least 10 characters is required for any authorized service payment.',
+      })
+    }
+
+    const effectiveApprovalRef = (approvalReference || agreementRef || '').trim()
+    if (!effectiveApprovalRef || effectiveApprovalRef.length < 3) {
+      return res.status(400).json({
+        message: 'A documented authorization/agreement reference is mandatory.',
+      })
+    }
+
+    const booking = await Booking.findById(req.params.id)
+    if (!booking) {
+      return res.status(404).json({ message: 'Referral booking not found.' })
+    }
+
+    const servicePaise = Math.round(amountNum * 100)
+    booking.authorizedServicePaymentPaise = (booking.authorizedServicePaymentPaise || 0) + servicePaise
+    await booking.save()
+
+    const cleanTxRef = (transactionReference || paymentReference)?.trim() || `SRV-${Date.now().toString().slice(-6)}`
+
+    const ledgerEntry = await FinancialLedger.create({
+      bookingId: booking._id,
+      bookingReference: booking.reference,
+      doctorId: booking.doctorId || null,
+      doctorName: booking.doctorName || '',
+      patientName: booking.patientName,
+      patientPhone: booking.phone,
+      entryType: 'AUTHORIZED_SERVICE_PAYMENT',
+      amountPaise: servicePaise,
+      paymentMethod,
+      transactionReference: cleanTxRef,
+      recordedBy: req.admin.email,
+      justification: `[${effectiveCategory}] ${effectiveJustification} (Approval Ref: ${effectiveApprovalRef})`,
+      notes: notes?.trim() || `Authorized service payment for booking ${booking.reference}`,
+    })
+
+    await recordAudit({
+      action: `Authorized service payment of ₹${amountNum.toFixed(2)} recorded for Booking ${booking.reference}`,
+      category: 'payment',
+      performedBy: req.admin.email,
+      targetId: String(ledgerEntry._id),
+      targetReference: booking.reference,
+      details: {
+        bookingId: String(booking._id),
+        serviceCategory: effectiveCategory,
+        servicePaise,
+        justification: effectiveJustification,
+        approvalReference: effectiveApprovalRef,
+        transactionReference: cleanTxRef,
+      },
+      req,
+    })
+
+    res.status(201).json({
+      message: `Authorized service payment of ₹${amountNum.toFixed(2)} recorded successfully.`,
+      booking,
+      ledgerEntry,
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 6. Update Settlement Status
+adminRouter.patch('/admin/referrals/:id/settlement', requireAdmin, async (req, res, next) => {
+  try {
+    const { settlementStatus, notes } = req.body || {}
+    const normalizedStatus = String(settlementStatus || '').toLowerCase().trim()
+    const valid = ['pending', 'partially_settled', 'settled', 'waived', 'disputed']
+
+    if (!valid.includes(normalizedStatus)) {
+      return res.status(400).json({ message: 'Valid settlement status is required.' })
+    }
+
+    const booking = await Booking.findById(req.params.id)
+    if (!booking) {
+      return res.status(404).json({ message: 'Referral booking not found.' })
+    }
+
+    booking.settlementStatus = normalizedStatus
+    booking.settledAt = new Date()
+    booking.settledBy = req.admin.email
+    if (notes) booking.settlementNotes = String(notes).trim()
+
+    await booking.save()
+
+    await recordAudit({
+      action: `Settlement status updated to '${settlementStatus}' for Booking ${booking.reference}`,
+      category: 'payment',
+      performedBy: req.admin.email,
+      targetId: String(booking._id),
+      targetReference: booking.reference,
+      details: { settlementStatus, notes },
+      req,
+    })
+
+    res.json({
+      message: `Settlement status updated to '${settlementStatus}'.`,
+      booking,
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// 7. Doctor-Wise Accounts & Financial Statements (Admin Overview & Filterable by Date Range)
+adminRouter.get('/admin/doctors-financial-statements', requireAdmin, async (req, res, next) => {
+  try {
+    const { doctorId, startDate, endDate } = req.query
+
+    const doctorQuery = { status: 'active' }
+    if (doctorId && doctorId !== 'all') {
+      doctorQuery._id = doctorId
+    }
+
+    const doctors = await Doctor.find(doctorQuery)
+      .select('name email mobile specialization qualification clinicName clinicAddress discountPercent commissionPercent referralCode status')
+      .sort({ name: 1 })
+      .lean()
+
+    const statements = await Promise.all(
+      doctors.map(async (doc) => {
+        const bookingQuery = {
+          $or: [{ doctorId: doc._id }, { doctorName: doc.name }],
+        }
+
+        if (startDate && endDate) {
+          bookingQuery.date = { $gte: String(startDate), $lte: String(endDate) }
+        } else if (startDate) {
+          bookingQuery.date = { $gte: String(startDate) }
+        } else if (endDate) {
+          bookingQuery.date = { $lte: String(endDate) }
+        }
+
+        const bookings = await Booking.find(bookingQuery).lean()
+
+        let totalTestsPrescribed = 0
+        let totalOriginalMrpPaise = 0
+        let totalDiscountPaise = 0
+        let totalPatientBillingPaise = 0
+        let totalAmountCollectedPaise = 0
+        let totalOutstandingPaise = 0
+        let totalRefundPaise = 0
+        let totalAuthorizedServicePaise = 0
+        let settledBookingsCount = 0
+        let pendingBookingsCount = 0
+
+        bookings.forEach((b) => {
+          const fin = computeBookingFinancials(b)
+          totalTestsPrescribed += Array.isArray(b.items) ? b.items.length : 1
+          totalOriginalMrpPaise += fin.originalMrpPaise
+          totalDiscountPaise += fin.doctorDiscountPaise
+          totalPatientBillingPaise += fin.patientPayablePaise
+          totalAmountCollectedPaise += fin.patientPaidPaise
+          totalOutstandingPaise += fin.patientOutstandingPaise
+          totalRefundPaise += fin.amountRefundedPaise
+          totalAuthorizedServicePaise += fin.authorizedServicePaise
+
+          if (b.settlementStatus === 'settled') {
+            settledBookingsCount++
+          } else {
+            pendingBookingsCount++
+          }
+        })
+
+        const netLabReceiptsPaise = Math.max(0, totalAmountCollectedPaise - totalRefundPaise)
+        const netLabRetainedPaise = Math.max(0, netLabReceiptsPaise - totalAuthorizedServicePaise)
+
+        return {
+          doctor: doc,
+          totalPatientsReferred: bookings.length,
+          totalReferrals: bookings.length,
+          totalTestsPrescribed,
+          totalOriginalMrpPaise,
+          totalDiscountPaise,
+          totalPatientBillingPaise,
+          totalAmountCollectedPaise,
+          totalOutstandingPaise,
+          totalRefundPaise,
+          totalAuthorizedServicePaise,
+          netLabReceiptsPaise,
+          netLabRetainedPaise,
+          settledBookingsCount,
+          pendingBookingsCount,
+          settlementCounts: {
+            settled: settledBookingsCount,
+            pending: pendingBookingsCount,
+            SETTLED: settledBookingsCount,
+            PENDING: pendingBookingsCount,
+          },
+          financials: {
+            totalMrpPaise: totalOriginalMrpPaise,
+            totalDoctorDiscountPaise: totalDiscountPaise,
+            totalPatientBillingPaise,
+            totalCollectedPaise: totalAmountCollectedPaise,
+            totalOutstandingPaise,
+            totalRefundsPaise: totalRefundPaise,
+            totalAuthorizedServicePaymentsPaise: totalAuthorizedServicePaise,
+            totalLabNetReceiptsPaise: netLabReceiptsPaise,
+            totalLabNetRetainedPaise: netLabRetainedPaise,
+          },
+          // Itemized bookings for simplified billing statement & printing
+          bookings: bookings.map((b) => {
+            const fin = computeBookingFinancials(b)
+            return {
+              _id: b._id,
+              reference: b.reference,
+              bookingReference: b.reference,
+              patientName: b.patientName,
+              phone: b.phone,
+              date: b.date,
+              timeSlot: b.timeSlot,
+              status: b.status,
+              paymentStatus: b.paymentStatus,
+              settlementStatus: b.settlementStatus,
+              items: b.items,
+              financials: fin,
+              mrpPaise: fin.originalMrpPaise,
+              discPaise: fin.doctorDiscountPaise,
+              billPaise: fin.patientPayablePaise,
+              paidPaise: fin.patientPaidPaise,
+              duePaise: fin.patientOutstandingPaise,
+              createdAt: b.createdAt,
+            }
+          }),
+        }
+      })
+    )
+
+    let overallDoctors = statements.length
+    let overallReferrals = 0
+    let overallMrpPaise = 0
+    let overallDiscountPaise = 0
+    let overallPatientBillingPaise = 0
+    let overallCollectedPaise = 0
+    let overallOutstandingPaise = 0
+    let overallRefundPaise = 0
+    let overallAuthorizedServicePaise = 0
+    let overallNetReceiptsPaise = 0
+    let overallNetRetainedPaise = 0
+
+    statements.forEach((s) => {
+      overallReferrals += s.totalReferrals || 0
+      overallMrpPaise += s.totalOriginalMrpPaise || 0
+      overallDiscountPaise += s.totalDiscountPaise || 0
+      overallPatientBillingPaise += s.totalPatientBillingPaise || 0
+      overallCollectedPaise += s.totalAmountCollectedPaise || 0
+      overallOutstandingPaise += s.totalOutstandingPaise || 0
+      overallRefundPaise += s.totalRefundPaise || 0
+      overallAuthorizedServicePaise += s.totalAuthorizedServicePaise || 0
+      overallNetReceiptsPaise += s.netLabReceiptsPaise || 0
+      overallNetRetainedPaise += s.netLabRetainedPaise || 0
+    })
+
+    res.json({
+      statements,
+      overallSummary: {
+        totalDoctors: overallDoctors,
+        totalReferrals: overallReferrals,
+        totalMrpPaise: overallMrpPaise,
+        totalOriginalMrpPaise: overallMrpPaise,
+        totalDoctorDiscountPaise: overallDiscountPaise,
+        totalPatientBillingPaise: overallPatientBillingPaise,
+        totalCollectedPaise: overallCollectedPaise,
+        totalOutstandingPaise: overallOutstandingPaise,
+        totalRefundPaise: overallRefundPaise,
+        totalAuthorizedServicePaise: overallAuthorizedServicePaise,
+        totalNetReceiptsPaise: overallNetReceiptsPaise,
+        totalLabNetRetainedPaise: overallNetRetainedPaise,
+      },
+      filters: { doctorId: doctorId || 'all', startDate: startDate || null, endDate: endDate || null },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ==========================================
 // BOOKING MANAGEMENT
 // ==========================================
 
@@ -223,6 +1288,272 @@ adminRouter.get('/admin/bookings', requireAdmin, async (req, res, next) => {
     ])
 
     res.json({ total, bookings })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Function to generate booking reference for admin created bookings
+function generateAdminBookingReference() {
+  const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const randomHex = crypto.randomBytes(2).toString('hex').toUpperCase()
+  return `UP-${todayStr}-${randomHex}`
+}
+
+// POST /admin/bookings - Create booking from Admin Dashboard with Referring Doctor linking
+adminRouter.post('/admin/bookings', requireAdmin, async (req, res, next) => {
+  try {
+    const {
+      patientName,
+      phone,
+      email,
+      age,
+      gender = 'prefer_not_to_say',
+      collectionType = 'centre',
+      address,
+      landmark,
+      city = 'Mandideep',
+      pinCode,
+      date,
+      timeSlot = '07:00 AM - 09:00 AM',
+      items,
+      doctorId,
+      doctorName,
+      paymentStatus = 'pending',
+      paymentMethod = 'Cash',
+      amountPaid,
+      amountPaidPaise: rawPaidPaise,
+      adminNotes,
+    } = req.body || {}
+
+    if (!patientName || patientName.trim().length < 2) {
+      return res.status(400).json({ message: 'Patient name is required (minimum 2 characters).' })
+    }
+
+    const cleanPhone = String(phone || '').trim()
+    if (!/^[6-9][0-9]{9}$/.test(cleanPhone)) {
+      return res.status(400).json({ message: 'Please provide a valid 10-digit Indian mobile number.' })
+    }
+
+    const cleanDate = String(date || '').trim() || new Date().toISOString().slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      return res.status(400).json({ message: 'Date must be formatted as YYYY-MM-DD.' })
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'At least one test or package must be selected.' })
+    }
+
+    // Resolve items and calculate authoritative pricing
+    const resolvedItems = []
+    let originalMrpPaise = 0
+    let subtotalPaise = 0
+    let hasUnverified = false
+
+    for (const item of items) {
+      const qty = Math.max(1, Number(item.quantity) || 1)
+      if (item.itemType === 'package') {
+        const pkg = await Package.findOne({
+          $or: [{ name: item.name }, ...(item.id ? [{ _id: item.id }] : [])],
+          isActive: true,
+        })
+        if (pkg) {
+          const itemMrp = ((pkg.mrpPaise && pkg.mrpPaise > 0) ? pkg.mrpPaise : pkg.pricePaise) * qty
+          const itemBase = pkg.pricePaise * qty
+          resolvedItems.push({
+            itemType: 'package',
+            itemId: pkg._id,
+            name: qty > 1 ? `${pkg.name} (x${qty})` : pkg.name,
+            code: pkg.code,
+            pricePaise: itemBase,
+            mrpPaise: itemMrp,
+            isVerifiedPrice: pkg.isVerifiedPrice,
+          })
+          originalMrpPaise += itemMrp
+          subtotalPaise += itemBase
+          if (!pkg.isVerifiedPrice) hasUnverified = true
+        }
+      } else {
+        const test = await Test.findOne({
+          $or: [{ name: item.name }, ...(item.id ? [{ _id: item.id }] : [])],
+          isActive: true,
+        })
+        if (test) {
+          const itemMrp = ((test.mrpPaise && test.mrpPaise > 0) ? test.mrpPaise : test.pricePaise) * qty
+          const itemBase = test.pricePaise * qty
+          resolvedItems.push({
+            itemType: 'test',
+            itemId: test._id,
+            name: qty > 1 ? `${test.name} (x${qty})` : test.name,
+            code: test.shortCode,
+            pricePaise: itemBase,
+            mrpPaise: itemMrp,
+            isVerifiedPrice: test.isVerifiedPrice,
+          })
+          originalMrpPaise += itemMrp
+          subtotalPaise += itemBase
+          if (!test.isVerifiedPrice) hasUnverified = true
+        }
+      }
+    }
+
+    if (resolvedItems.length === 0) {
+      return res.status(400).json({ message: 'No valid tests or packages found. Please select from active catalogue.' })
+    }
+
+    // Referring Doctor linking
+    let doctorDoc = null
+    let doctorDiscountPercent = 0
+    let discountAmountPaise = 0
+    let referredBy = 'self'
+
+    const isDirect = !doctorId || doctorId === 'walkin' || doctorId === 'self' || doctorId === 'direct' || doctorId === 'none'
+
+    if (!isDirect) {
+      if (mongoose.Types.ObjectId.isValid(doctorId)) {
+        doctorDoc = await Doctor.findById(doctorId)
+      }
+      if (!doctorDoc && doctorName && doctorName.trim()) {
+        doctorDoc = await Doctor.findOne({
+          $or: [
+            { name: new RegExp(`^${doctorName.trim()}`, 'i') },
+            { referralCode: doctorName.trim().toUpperCase() },
+          ],
+        })
+      }
+
+      if (doctorDoc) {
+        doctorDiscountPercent = doctorDoc.discountPercent || 0
+        discountAmountPaise = Math.round(originalMrpPaise * (doctorDiscountPercent / 100))
+        referredBy = 'doctor'
+      }
+    }
+
+    // Update resolved items discount & final prices
+    resolvedItems.forEach((it) => {
+      it.discountPaise = Math.round((it.mrpPaise || it.pricePaise) * (doctorDiscountPercent / 100))
+      it.finalPricePaise = Math.max(0, (it.mrpPaise || it.pricePaise) - it.discountPaise)
+    })
+
+    const totalAmountPaise = Math.max(0, originalMrpPaise - discountAmountPaise)
+
+    // Calculate payments & balances
+    let paidPaise = 0
+    if (rawPaidPaise !== undefined && rawPaidPaise !== null && !isNaN(Number(rawPaidPaise))) {
+      paidPaise = Math.max(0, Math.round(Number(rawPaidPaise)))
+    } else if (amountPaid !== undefined && amountPaid !== null && !isNaN(Number(amountPaid))) {
+      paidPaise = Math.max(0, Math.round(Number(amountPaid) * 100))
+    } else if (paymentStatus === 'paid') {
+      paidPaise = totalAmountPaise
+    }
+
+    const outstandingAmountPaise = Math.max(0, totalAmountPaise - paidPaise)
+    const effectivePaymentStatus = paidPaise >= totalAmountPaise ? 'paid' : (paidPaise > 0 ? 'pending' : (paymentStatus || 'pending'))
+
+    let reference = generateAdminBookingReference()
+    while (await Booking.findOne({ reference })) {
+      reference = generateAdminBookingReference()
+    }
+
+    const booking = await Booking.create({
+      reference,
+      patientName: patientName.trim(),
+      phone: cleanPhone,
+      email: email ? String(email).trim().toLowerCase() : undefined,
+      age: age ? Number(age) : undefined,
+      gender,
+      collectionType,
+      address: address ? String(address).trim() : '',
+      landmark: landmark ? String(landmark).trim() : '',
+      city: city ? String(city).trim() : 'Mandideep',
+      pinCode: pinCode ? String(pinCode).trim() : '',
+      date: cleanDate,
+      timeSlot,
+      items: resolvedItems,
+      originalMrpPaise,
+      subtotalPaise,
+      discountAmountPaise,
+      totalAmountPaise,
+      amountPaidPaise: paidPaise,
+      outstandingAmountPaise,
+      amountRefundedPaise: 0,
+      authorizedServicePaymentPaise: 0,
+      settlementStatus: 'pending',
+      paymentStatus: effectivePaymentStatus,
+      paidAt: paidPaise >= totalAmountPaise ? new Date() : undefined,
+      status: 'confirmed',
+      consent: true,
+      doctorId: doctorDoc ? doctorDoc._id : null,
+      doctorName: doctorDoc ? doctorDoc.name : '',
+      doctorDiscountPercent,
+      referredBy,
+      adminNotes: adminNotes ? String(adminNotes).trim() : (doctorDoc ? `Created by Admin | Ref: Dr. ${doctorDoc.name}` : 'Created by Admin (Walk-in)'),
+    })
+
+    // If payment recorded, create FinancialLedger entry
+    if (paidPaise > 0) {
+      const cleanTxRef = `ADM-RCP-${Date.now().toString().slice(-6)}`
+      await FinancialLedger.create({
+        bookingId: booking._id,
+        bookingReference: booking.reference,
+        doctorId: booking.doctorId || null,
+        doctorName: booking.doctorName || '',
+        patientName: booking.patientName,
+        patientPhone: booking.phone,
+        entryType: 'PATIENT_PAYMENT',
+        amountPaise: paidPaise,
+        paymentMethod: paymentMethod || 'Cash',
+        transactionReference: cleanTxRef,
+        originalMrpPaise,
+        discountAmountPaise,
+        patientPayablePaise: totalAmountPaise,
+        recordedBy: req.admin.email,
+        notes: `Payment collected at booking creation via ${paymentMethod || 'Cash'}`,
+      })
+
+      const testOrPackageName = resolvedItems.map((i) => i.name).join(', ')
+      await Payment.create({
+        bookingId: booking._id,
+        bookingReference: booking.reference,
+        patientName: booking.patientName,
+        mobileNumber: booking.phone,
+        testOrPackageName,
+        originalAmount: originalMrpPaise / 100,
+        discountAmount: discountAmountPaise / 100,
+        finalAmount: paidPaise / 100,
+        amountPaise: paidPaise,
+        currency: 'INR',
+        paymentMethod: paymentMethod || 'Cash',
+        status: 'paid',
+        paymentDate: new Date(),
+        cardOrVpa: cleanTxRef,
+        reconciled: true,
+        reconciledAt: new Date(),
+        reconciledBy: req.admin.email,
+        notes: `Reconciled counter receipt ${cleanTxRef}`,
+      })
+    }
+
+    await recordAudit({
+      action: `Admin created booking ${booking.reference} for ${booking.patientName}`,
+      category: 'booking',
+      performedBy: req.admin.email,
+      targetId: String(booking._id),
+      targetReference: booking.reference,
+      details: {
+        doctorId: doctorDoc ? String(doctorDoc._id) : null,
+        doctorName: doctorDoc ? doctorDoc.name : 'Walk-in',
+        totalAmountPaise,
+        paidPaise,
+        outstandingAmountPaise,
+      },
+      req,
+    })
+
+    res.status(201).json({
+      message: `Booking ${booking.reference} created successfully for ${booking.patientName}.`,
+      booking,
+    })
   } catch (err) {
     next(err)
   }

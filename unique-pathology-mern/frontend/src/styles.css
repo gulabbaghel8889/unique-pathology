@@ -224,21 +224,61 @@ button, a, input, select, textarea {
   cursor: not-allowed;
 }
 
-/* Print styles for booking confirmations & reports */
+/* Print styles for booking confirmations, doctor ledgers & billing reports */
 @media print {
-  header, footer, nav, .no-print, .mobile-bottom-nav {
+  @page {
+    size: A4 portrait;
+    margin: 10mm 12mm 10mm 12mm;
+  }
+  html, body {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  header, footer, nav, aside, .no-print, .mobile-bottom-nav, .modal-backdrop, .print\:hidden {
     display: none !important;
   }
-  body {
-    background: white;
-    color: black;
-    padding-bottom: 0 !important;
+  body * {
+    visibility: hidden;
   }
-  .print-area {
-    padding: 0;
-    margin: 0;
+  #printable-financial-document, #printable-financial-document * {
+    visibility: visible;
+  }
+  #printable-financial-document {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
     border: none !important;
     box-shadow: none !important;
+  }
+  .print-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto;
+  }
+  .print-table tr {
+    page-break-inside: avoid !important;
+    page-break-after: auto;
+  }
+  .print-table thead {
+    display: table-header-group !important;
+  }
+  .print-table tfoot {
+    display: table-footer-group !important;
+  }
+  .print-totals-row, .print-signature-block {
+    page-break-inside: avoid !important;
   }
 }
 

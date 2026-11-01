@@ -29,6 +29,12 @@ import {
   ChevronRight,
   Download,
   Info,
+  Printer,
+  X,
+  Plus,
+  Trash2,
+  Eye,
+  Receipt,
 } from 'lucide-react'
 import { useDoctorAuth } from '../context/DoctorAuthContext.jsx'
 import { apiRequest } from '../api.js'
@@ -36,6 +42,11 @@ import { PriceBadge } from '../components/PriceBadge.jsx'
 
 export function DoctorDashboardPage() {
   const navigate = useNavigate()
+
+  useEffect(() => {
+    navigate('/admin/login', { replace: true })
+  }, [navigate])
+
   const { doctor, isAuthenticated, loading: authLoading, logout, refreshDoctor } = useDoctorAuth()
 
   const [activeTab, setActiveTab] = useState('overview') // 'overview' | 'patients' | 'refer' | 'catalogue' | 'profile'
@@ -48,13 +59,21 @@ export function DoctorDashboardPage() {
   const [patientsLoading, setPatientsLoading] = useState(false)
   const [patientSearch, setPatientSearch] = useState('')
   const [patientStatusFilter, setPatientStatusFilter] = useState('all')
+  const [patientPaymentFilter, setPatientPaymentFilter] = useState('all')
+  const [patientStartDate, setPatientStartDate] = useState('')
+  const [patientEndDate, setPatientEndDate] = useState('')
+  const [patientPage, setPatientPage] = useState(1)
+  const [patientPagination, setPatientPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 1 })
+  const [selectedPatientDetail, setSelectedPatientDetail] = useState(null)
+  const [printableReceipt, setPrintableReceipt] = useState(null)
 
   // Catalogue Tab state
   const [catalogueData, setCatalogueData] = useState({ tests: [], packages: [] })
   const [catalogueLoading, setCatalogueLoading] = useState(false)
   const [catalogueSearch, setCatalogueSearch] = useState('')
 
-  // Refer a Patient Form state
+  // Multi-item Refer a Patient Form state
+  const [referralItems, setReferralItems] = useState([])
   const [referralForm, setReferralForm] = useState({
     patientName: '',
     phone: '',
@@ -98,17 +117,26 @@ export function DoctorDashboardPage() {
     }
   }
 
-  // Load Patients list
-  async function loadPatients() {
+  // Load Patients list with complete filters and pagination
+  async function loadPatients(pageToLoad = patientPage) {
     if (!isAuthenticated) return
     setPatientsLoading(true)
     try {
       const queryParams = new URLSearchParams()
       if (patientSearch.trim()) queryParams.set('search', patientSearch.trim())
       if (patientStatusFilter !== 'all') queryParams.set('status', patientStatusFilter)
+      if (patientPaymentFilter !== 'all') queryParams.set('paymentStatus', patientPaymentFilter)
+      if (patientStartDate) queryParams.set('startDate', patientStartDate)
+      if (patientEndDate) queryParams.set('endDate', patientEndDate)
+      queryParams.set('page', String(pageToLoad))
+      queryParams.set('limit', '20')
 
       const data = await apiRequest(`/doctor/patients?${queryParams.toString()}`, { authType: 'doctor' })
       setPatients(data.bookings || [])
+      if (data.pagination) {
+        setPatientPagination(data.pagination)
+        setPatientPage(data.pagination.page)
+      }
     } catch (err) {
       console.warn('Failed to load doctor patients:', err.message)
     } finally {
@@ -148,9 +176,9 @@ export function DoctorDashboardPage() {
 
   useEffect(() => {
     if (activeTab === 'patients') {
-      loadPatients()
+      loadPatients(1)
     }
-  }, [activeTab, patientSearch, patientStatusFilter])
+  }, [activeTab, patientSearch, patientStatusFilter, patientPaymentFilter, patientStartDate, patientEndDate])
 
   function handleCopyReferralCode() {
     if (doctor?.referralCode) {
@@ -158,6 +186,43 @@ export function DoctorDashboardPage() {
       setCopiedCode(true)
       setTimeout(() => setCopiedCode(false), 2500)
     }
+  }
+
+  // Multi-item helper: Add current selected item to referral items list
+  function handleAddReferralItem() {
+    const itemToAdd =
+      referralForm.selectedItemType === 'package'
+        ? catalogueData.packages.find((p) => p.name === referralForm.selectedItemName)
+        : catalogueData.tests.find((t) => t.name === referralForm.selectedItemName)
+
+    if (!itemToAdd) return
+
+    // Prevent duplicate item in list
+    if (referralItems.some((it) => it.name === itemToAdd.name && it.itemType === referralForm.selectedItemType)) {
+      return
+    }
+
+    const mrpPaise = itemToAdd.originalMrpPaise || itemToAdd.mrpPaise || itemToAdd.pricePaise || 0
+    const discountPaise = Math.round(mrpPaise * (discountPercent / 100))
+    const finalPricePaise = Math.max(0, mrpPaise - discountPaise)
+
+    setReferralItems((prev) => [
+      ...prev,
+      {
+        itemType: referralForm.selectedItemType,
+        itemId: itemToAdd._id,
+        name: itemToAdd.name,
+        code: itemToAdd.code || itemToAdd.shortCode || '',
+        pricePaise: itemToAdd.pricePaise,
+        mrpPaise,
+        discountPaise,
+        finalPricePaise,
+      },
+    ])
+  }
+
+  function handleRemoveReferralItem(index) {
+    setReferralItems((prev) => prev.filter((_, idx) => idx !== index))
   }
 
   // Handle direct patient referral submission
@@ -168,18 +233,30 @@ export function DoctorDashboardPage() {
     setReferralSuccess(null)
 
     try {
+      // Determine items: use referralItems if populated, otherwise use currently selected test
+      let itemsToSubmit = []
+      if (referralItems.length > 0) {
+        itemsToSubmit = referralItems.map((it) => ({
+          itemType: it.itemType,
+          name: it.name,
+          id: it.itemId,
+        }))
+      } else {
+        itemsToSubmit = [
+          {
+            itemType: referralForm.selectedItemType,
+            name: referralForm.selectedItemName,
+          },
+        ]
+      }
+
       const payload = {
         patientName: referralForm.patientName.trim(),
         phone: referralForm.phone.trim(),
         email: referralForm.email.trim() || undefined,
         age: referralForm.age ? Number(referralForm.age) : undefined,
         gender: referralForm.gender,
-        items: [
-          {
-            itemType: referralForm.selectedItemType,
-            name: referralForm.selectedItemName,
-          },
-        ],
+        items: itemsToSubmit,
         date: referralForm.date,
         timeSlot: referralForm.timeSlot,
         collectionType: referralForm.collectionType,
@@ -194,6 +271,7 @@ export function DoctorDashboardPage() {
       })
 
       setReferralSuccess(res.booking)
+      setReferralItems([])
       setReferralForm((prev) => ({
         ...prev,
         patientName: '',
@@ -217,6 +295,41 @@ export function DoctorDashboardPage() {
   // Find currently selected test in referral form for live price preview
   const selectedTestItem =
     referralForm.selectedItemType === 'package'
+      ? catalogueData.packages.find((p) => p.name === referralForm.selectedItemName)
+      : catalogueData.tests.find((t) => t.name === referralForm.selectedItemName)
+
+  // Calculate live multi-item totals
+  const activeReferralList =
+    referralItems.length > 0
+      ? referralItems
+      : selectedTestItem
+      ? [
+          {
+            name: selectedTestItem.name,
+            itemType: referralForm.selectedItemType,
+            mrpPaise: selectedTestItem.originalMrpPaise || selectedTestItem.mrpPaise || selectedTestItem.pricePaise || 0,
+            pricePaise: selectedTestItem.pricePaise,
+            discountPaise: Math.round(
+              ((selectedTestItem.originalMrpPaise || selectedTestItem.mrpPaise || selectedTestItem.pricePaise || 0) *
+                discountPercent) /
+                100
+            ),
+            finalPricePaise: Math.max(
+              0,
+              (selectedTestItem.originalMrpPaise || selectedTestItem.mrpPaise || selectedTestItem.pricePaise || 0) -
+                Math.round(
+                  ((selectedTestItem.originalMrpPaise || selectedTestItem.mrpPaise || selectedTestItem.pricePaise || 0) *
+                    discountPercent) /
+                    100
+                )
+            ),
+          },
+        ]
+      : []
+
+  const liveTotalMrpPaise = activeReferralList.reduce((acc, it) => acc + (it.mrpPaise || it.pricePaise || 0), 0)
+  const liveDiscountPaise = Math.round(liveTotalMrpPaise * (discountPercent / 100))
+  const livePayablePaise = Math.max(0, liveTotalMrpPaise - liveDiscountPaise)
       ? catalogueData.packages.find((p) => p.name === referralForm.selectedItemName)
       : catalogueData.tests.find((t) => t.name === referralForm.selectedItemName)
 
@@ -560,45 +673,85 @@ export function DoctorDashboardPage() {
         )}
 
         {/* ========================================================
-            TAB 2: REFERRED PATIENTS DIRECTORY
+            TAB 2: REFERRED PATIENTS DIRECTORY (WITH FINANCIALS & AUDIT)
            ======================================================== */}
         {activeTab === 'patients' && (
           <div className="space-y-5 animate-fadeIn">
-            {/* Search & Filters */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="relative w-full sm:max-w-md">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
-                <input
-                  type="text"
-                  value={patientSearch}
-                  onChange={(e) => setPatientSearch(e.target.value)}
-                  placeholder="Search patient by name, mobile, reference..."
-                  className="field pl-10 text-xs"
-                />
-              </div>
+            {/* Search & Comprehensive Filters */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3">
+              <div className="flex flex-col lg:flex-row items-center justify-between gap-3">
+                <div className="relative w-full lg:max-w-md">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+                  <input
+                    type="text"
+                    value={patientSearch}
+                    onChange={(e) => setPatientSearch(e.target.value)}
+                    placeholder="Search by patient name, mobile, booking ID..."
+                    className="field pl-10 text-xs"
+                  />
+                </div>
 
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <select
-                  value={patientStatusFilter}
-                  onChange={(e) => setPatientStatusFilter(e.target.value)}
-                  className="field text-xs py-2"
-                >
-                  <option value="all">All Statuses</option>
-                  <option value="requested">Requested</option>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="sample_collected">Sample Collected</option>
-                  <option value="processing">Processing</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
+                <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                  {/* Date Range Filters */}
+                  <div className="flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-xl">
+                    <Calendar size={14} className="text-slate-400 shrink-0" />
+                    <input
+                      type="date"
+                      value={patientStartDate}
+                      onChange={(e) => setPatientStartDate(e.target.value)}
+                      className="bg-transparent text-xs text-slate-700 outline-none"
+                      title="From Date"
+                    />
+                    <span className="text-slate-400">to</span>
+                    <input
+                      type="date"
+                      value={patientEndDate}
+                      onChange={(e) => setPatientEndDate(e.target.value)}
+                      className="bg-transparent text-xs text-slate-700 outline-none"
+                      title="To Date"
+                    />
+                  </div>
 
-                <button
-                  onClick={loadPatients}
-                  className="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 transition shrink-0"
-                  title="Refresh list"
-                >
-                  <RefreshCw size={15} />
-                </button>
+                  <select
+                    value={patientStatusFilter}
+                    onChange={(e) => setPatientStatusFilter(e.target.value)}
+                    className="field text-xs py-2 w-auto"
+                  >
+                    <option value="all">All Booking Statuses</option>
+                    <option value="requested">Requested</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="sample_collected">Sample Collected</option>
+                    <option value="processing">Processing</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+
+                  <select
+                    value={patientPaymentFilter}
+                    onChange={(e) => setPatientPaymentFilter(e.target.value)}
+                    className="field text-xs py-2 w-auto"
+                  >
+                    <option value="all">All Payment Statuses</option>
+                    <option value="paid">Paid</option>
+                    <option value="not_started">Payment Pending</option>
+                    <option value="refunded">Refunded</option>
+                  </select>
+
+                  <button
+                    onClick={() => {
+                      setPatientSearch('')
+                      setPatientStatusFilter('all')
+                      setPatientPaymentFilter('all')
+                      setPatientStartDate('')
+                      setPatientEndDate('')
+                      loadPatients(1)
+                    }}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-500 transition shrink-0"
+                    title="Reset all filters"
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -607,16 +760,16 @@ export function DoctorDashboardPage() {
               {patientsLoading ? (
                 <div className="py-16 text-center space-y-2">
                   <div className="h-8 w-8 animate-spin rounded-full border-3 border-cyan-600 border-t-transparent mx-auto" />
-                  <p className="text-xs font-bold text-slate-500">Loading your referred patients...</p>
+                  <p className="text-xs font-bold text-slate-500">Loading your referred patients & financial records...</p>
                 </div>
               ) : patients.length === 0 ? (
                 <div className="text-center py-16 space-y-3">
                   <Users size={36} className="mx-auto text-slate-300" />
-                  <h3 className="text-base font-bold text-[#073b66]">No patients found</h3>
+                  <h3 className="text-base font-bold text-[#073b66]">No patient referral records found</h3>
                   <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    {patientSearch
-                      ? `No patient records matching "${patientSearch}".`
-                      : 'Patients referred with your code or booked directly from this portal will appear here.'}
+                    {patientSearch || patientStartDate || patientEndDate || patientStatusFilter !== 'all' || patientPaymentFilter !== 'all'
+                      ? 'No records matching the selected search or filter criteria.'
+                      : 'Patients referred with your code or booked directly from this portal will appear here with transparent pricing.'}
                   </p>
                 </div>
               ) : (
@@ -624,71 +777,199 @@ export function DoctorDashboardPage() {
                   <table className="w-full text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-100 text-[11px] font-black uppercase tracking-wider text-slate-400">
-                        <th className="pb-3">Patient Name</th>
-                        <th className="pb-3">Contact</th>
-                        <th className="pb-3">Prescribed Tests</th>
-                        <th className="pb-3">Discount Applied</th>
-                        <th className="pb-3">Status</th>
-                        <th className="pb-3">Date</th>
+                        <th className="pb-3">Booking ID & Date</th>
+                        <th className="pb-3">Patient Details</th>
+                        <th className="pb-3">Prescribed Tests / Packages</th>
+                        <th className="pb-3 text-right">Original MRP</th>
+                        <th className="pb-3 text-right">Doctor Discount</th>
+                        <th className="pb-3 text-right">Final Payable</th>
+                        <th className="pb-3">Booking Status</th>
+                        <th className="pb-3">Payment Status</th>
+                        <th className="pb-3">Sample Collection</th>
+                        <th className="pb-3">Report Status</th>
+                        <th className="pb-3 text-center">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium">
-                      {patients.map((p) => (
-                        <tr key={p._id} className="hover:bg-slate-50/80 transition">
-                          <td className="py-3.5">
-                            <strong className="block font-bold text-[#073b66]">{p.patientName}</strong>
-                            <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
-                              <span>Ref: {p.reference}</span>
-                              {p.age && <span>• {p.age}y</span>}
-                              {p.gender && <span className="capitalize">• {p.gender}</span>}
-                            </div>
-                          </td>
-                          <td className="py-3.5 text-slate-600">
-                            <div>{p.phone}</div>
-                            {p.email && <small className="text-slate-400 block">{p.email}</small>}
-                          </td>
-                          <td className="py-3.5 max-w-[220px]">
-                            <div className="font-semibold text-slate-700 truncate">
-                              {p.items?.map((it) => it.name).join(', ') || 'Test'}
-                            </div>
-                            <span className="text-[10px] text-slate-400 capitalize">
-                              {p.collectionType === 'home' ? 'Home Sample Collection' : 'Centre Visit'}
-                            </span>
-                          </td>
-                          <td className="py-3.5">
-                            {p.discountApplied ? (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
-                                ✓ {p.doctorDiscountPercent || discountPercent}% Discount Applied
+                      {patients.map((p) => {
+                        const mrp = (p.originalMrpPaise || 0) / 100
+                        const discount = (p.discountAmountPaise || 0) / 100
+                        const payable = (p.totalAmountPaise || 0) / 100
+                        const isPaid = p.paymentStatus === 'paid'
+
+                        return (
+                          <tr key={p._id} className="hover:bg-slate-50/80 transition">
+                            {/* Booking ID & Date */}
+                            <td className="py-3.5 whitespace-nowrap">
+                              <span className="font-mono font-bold text-cyan-800 text-xs block">{p.reference}</span>
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                <Calendar size={11} />
+                                <span>{p.date}</span>
+                              </div>
+                              <span className="text-[9px] text-slate-400 block">{p.timeSlot}</span>
+                            </td>
+
+                            {/* Patient Info */}
+                            <td className="py-3.5">
+                              <strong className="block font-bold text-[#073b66]">{p.patientName}</strong>
+                              <div className="text-[11px] text-slate-600 flex items-center gap-1">
+                                <Phone size={11} className="text-slate-400" />
+                                <span>{p.phone}</span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 mt-0.5">
+                                {p.age ? `${p.age}y` : ''} {p.gender && p.gender !== 'prefer_not_to_say' ? `• ${p.gender}` : ''}
+                              </div>
+                            </td>
+
+                            {/* Prescribed Tests */}
+                            <td className="py-3.5 max-w-[200px]">
+                              <div className="font-semibold text-slate-700 truncate" title={p.items?.map((it) => it.name).join(', ')}>
+                                {p.items?.map((it) => it.name).join(', ') || 'Diagnostic Test'}
+                              </div>
+                              <span className="text-[10px] text-slate-400 block mt-0.5">
+                                {p.items?.length || 1} {p.items?.length === 1 ? 'investigation' : 'investigations'}
                               </span>
-                            ) : (
-                              <span className="text-[10px] text-slate-400">Regular Tariff</span>
-                            )}
-                          </td>
-                          <td className="py-3.5">
-                            <span
-                              className={`inline-block rounded-md px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                                p.status === 'completed'
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                  : p.status === 'processing'
-                                  ? 'bg-cyan-50 text-cyan-800 border border-cyan-200'
-                                  : p.status === 'sample_collected'
-                                  ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                                  : p.status === 'confirmed'
-                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {p.status.replace('_', ' ')}
-                            </span>
-                          </td>
-                          <td className="py-3.5 text-slate-500 text-[11px]">
-                            {p.date}
-                            <span className="block text-[10px] text-slate-400">{p.timeSlot}</span>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+
+                            {/* Original MRP */}
+                            <td className="py-3.5 text-right font-mono text-slate-500 whitespace-nowrap">
+                              ₹{mrp.toLocaleString('en-IN')}
+                            </td>
+
+                            {/* Doctor Discount */}
+                            <td className="py-3.5 text-right font-mono text-emerald-700 whitespace-nowrap">
+                              <span className="inline-block bg-emerald-50 px-1.5 py-0.5 rounded text-[10px] font-bold border border-emerald-200">
+                                -₹{discount.toLocaleString('en-IN')} ({p.doctorDiscountPercent || discountPercent}%)
+                              </span>
+                            </td>
+
+                            {/* Final Payable */}
+                            <td className="py-3.5 text-right font-mono font-black text-[#073b66] whitespace-nowrap text-sm">
+                              ₹{payable.toLocaleString('en-IN')}
+                            </td>
+
+                            {/* Booking Status */}
+                            <td className="py-3.5 whitespace-nowrap">
+                              <span
+                                className={`inline-block rounded-md px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                                  p.status === 'completed'
+                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                    : p.status === 'processing'
+                                    ? 'bg-cyan-50 text-cyan-800 border border-cyan-200'
+                                    : p.status === 'sample_collected'
+                                    ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                    : p.status === 'confirmed'
+                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                    : p.status === 'cancelled'
+                                    ? 'bg-red-50 text-red-700 border border-red-200'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                {p.status.replace('_', ' ')}
+                              </span>
+                            </td>
+
+                            {/* Payment Status */}
+                            <td className="py-3.5 whitespace-nowrap">
+                              {isPaid ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-800 border border-emerald-200">
+                                  <Check size={11} />
+                                  <span>Paid</span>
+                                </span>
+                              ) : p.paymentStatus === 'refunded' ? (
+                                <span className="inline-block rounded-md bg-purple-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-purple-800 border border-purple-200">
+                                  Refunded
+                                </span>
+                              ) : (
+                                <div>
+                                  <span className="inline-block rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-800 border border-amber-200">
+                                    Due at Centre
+                                  </span>
+                                  {p.outstandingAmountPaise > 0 && (
+                                    <span className="block text-[10px] text-slate-400 mt-0.5">
+                                      Due: ₹{(p.outstandingAmountPaise / 100).toLocaleString('en-IN')}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Sample Collection Status */}
+                            <td className="py-3.5 whitespace-nowrap text-[11px] text-slate-600">
+                              <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                                {p.sampleCollectionStatus || (p.collectionType === 'home' ? 'Home Sample' : 'Centre Visit')}
+                              </span>
+                            </td>
+
+                            {/* Report Status */}
+                            <td className="py-3.5 whitespace-nowrap">
+                              {p.reportStatus === 'released' ? (
+                                <Link
+                                  to={`/reports?ref=${p.reference}`}
+                                  className="inline-flex items-center gap-1 rounded-md bg-cyan-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-800 border border-cyan-200 hover:bg-cyan-100 transition"
+                                  title="View Diagnostic Report"
+                                >
+                                  <FileText size={11} />
+                                  <span>Report Ready</span>
+                                </Link>
+                              ) : p.reportStatus === 'processing' ? (
+                                <span className="inline-block rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-blue-700 border border-blue-200">
+                                  In Laboratory
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-400">Awaiting Sample</span>
+                              )}
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-3.5 whitespace-nowrap text-center">
+                              <div className="flex items-center justify-center gap-1.5">
+                                <button
+                                  onClick={() => setSelectedPatientDetail(p)}
+                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-cyan-50 hover:text-cyan-800 hover:border-cyan-200 transition"
+                                  title="View Detailed Referral"
+                                >
+                                  <Eye size={14} />
+                                </button>
+                                <button
+                                  onClick={() => setPrintableReceipt(p)}
+                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition"
+                                  title="Print Patient Referral Receipt"
+                                >
+                                  <Printer size={14} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {/* Pagination Bar */}
+              {patientPagination.totalPages > 1 && (
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <span>
+                    Page {patientPagination.page} of {patientPagination.totalPages} ({patientPagination.total} total referrals)
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => loadPatients(patientPage - 1)}
+                      disabled={patientPage <= 1 || patientsLoading}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 font-bold hover:bg-slate-50 disabled:opacity-40 transition"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() => loadPatients(patientPage + 1)}
+                      disabled={patientPage >= patientPagination.totalPages || patientsLoading}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 font-bold hover:bg-slate-50 disabled:opacity-40 transition"
+                    >
+                      Next
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -803,98 +1084,174 @@ export function DoctorDashboardPage() {
                   </div>
                 </div>
 
-                {/* Test Selection */}
-                <div className="space-y-3 pt-2 border-t border-slate-100">
-                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                    2. Prescribed Diagnostic Investigation
-                  </h4>
-
-                  <div className="grid gap-3 sm:grid-cols-2">
+                {/* Test Selection with Multi-Item Support */}
+                <div className="space-y-4 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <label className="field-label">Investigation Category</label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setReferralForm({
-                              ...referralForm,
-                              selectedItemType: 'test',
-                              selectedItemName: catalogueData.tests[0]?.name || '',
-                            })
-                          }}
-                          className={`py-2 text-xs font-extrabold rounded-xl border transition ${
-                            referralForm.selectedItemType === 'test'
-                              ? 'bg-[#073b66] text-white border-[#073b66]'
-                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                          }`}
-                        >
-                          Individual Test
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setReferralForm({
-                              ...referralForm,
-                              selectedItemType: 'package',
-                              selectedItemName: catalogueData.packages[0]?.name || '',
-                            })
-                          }}
-                          className={`py-2 text-xs font-extrabold rounded-xl border transition ${
-                            referralForm.selectedItemType === 'package'
-                              ? 'bg-[#073b66] text-white border-[#073b66]'
-                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                          }`}
-                        >
-                          Health Package
-                        </button>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="field-label">Select Test / Profile *</label>
-                      <select
-                        value={referralForm.selectedItemName}
-                        onChange={(e) => setReferralForm({ ...referralForm, selectedItemName: e.target.value })}
-                        className="field text-xs"
-                        required
-                      >
-                        {referralForm.selectedItemType === 'test'
-                          ? catalogueData.tests.map((t) => (
-                              <option key={t._id} value={t.name}>
-                                {t.name} ({t.department})
-                              </option>
-                            ))
-                          : catalogueData.packages.map((p) => (
-                              <option key={p._id} value={p.name}>
-                                {p.name}
-                              </option>
-                            ))}
-                      </select>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                        2. Prescribed Diagnostic Investigations
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Select one or more pathology tests and health packages with live MRP & doctor discount calculations.
+                      </p>
                     </div>
                   </div>
 
-                  {/* Live Price Calculator Breakdown */}
-                  {selectedTestItem && (
-                    <div className="rounded-2xl border border-cyan-200 bg-cyan-50/60 p-4 text-xs space-y-2">
-                      <div className="flex items-center justify-between font-bold text-[#073b66]">
-                        <span>Regular Lab Tariff:</span>
-                        <span>₹{((selectedTestItem.pricePaise || 0) / 100).toLocaleString('en-IN')}</span>
+                  {/* Investigation Picker Controls */}
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="field-label">Investigation Category</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReferralForm({
+                                ...referralForm,
+                                selectedItemType: 'test',
+                                selectedItemName: catalogueData.tests[0]?.name || '',
+                              })
+                            }}
+                            className={`py-2 text-xs font-extrabold rounded-xl border transition ${
+                              referralForm.selectedItemType === 'test'
+                                ? 'bg-[#073b66] text-white border-[#073b66]'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            Individual Test
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReferralForm({
+                                ...referralForm,
+                                selectedItemType: 'package',
+                                selectedItemName: catalogueData.packages[0]?.name || '',
+                              })
+                            }}
+                            className={`py-2 text-xs font-extrabold rounded-xl border transition ${
+                              referralForm.selectedItemType === 'package'
+                                ? 'bg-[#073b66] text-white border-[#073b66]'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            Health Package
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center justify-between font-bold text-emerald-700">
-                        <span>Your Doctor Referral Discount ({discountPercent}%):</span>
-                        <span>
-                          -₹{(Math.round((selectedTestItem.pricePaise * (discountPercent / 100)) / 100)).toLocaleString('en-IN')}
-                        </span>
+
+                      <div>
+                        <label className="field-label">Select Test / Profile *</label>
+                        <select
+                          value={referralForm.selectedItemName}
+                          onChange={(e) => setReferralForm({ ...referralForm, selectedItemName: e.target.value })}
+                          className="field text-xs bg-white"
+                          required
+                        >
+                          {referralForm.selectedItemType === 'test'
+                            ? catalogueData.tests.map((t) => (
+                                <option key={t._id} value={t.name}>
+                                  {t.name} (MRP: ₹{((t.originalMrpPaise || t.mrpPaise || t.pricePaise) / 100).toLocaleString('en-IN')})
+                                </option>
+                              ))
+                            : catalogueData.packages.map((p) => (
+                                <option key={p._id} value={p.name}>
+                                  {p.name} (MRP: ₹{((p.originalMrpPaise || p.mrpPaise || p.pricePaise) / 100).toLocaleString('en-IN')})
+                                </option>
+                              ))}
+                        </select>
                       </div>
-                      <div className="pt-2 border-t border-cyan-200/80 flex items-center justify-between font-black text-base text-[#073b66]">
-                        <span>Net Patient Tariff:</span>
-                        <span className="text-cyan-800">
-                          ₹{((Math.max(0, selectedTestItem.pricePaise - Math.round(selectedTestItem.pricePaise * (discountPercent / 100)))) / 100).toLocaleString('en-IN')}
-                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        type="button"
+                        onClick={handleAddReferralItem}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition"
+                      >
+                        <Plus size={14} />
+                        <span>Add Investigation to Prescription List</span>
+                      </button>
+
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        {referralItems.length} added to list
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Multi-Item Selected Table */}
+                  {referralItems.length > 0 && (
+                    <div className="rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                      <div className="bg-slate-100/80 px-4 py-2 border-b border-slate-200 text-[11px] font-bold text-slate-600 flex items-center justify-between">
+                        <span>Selected Prescriptions ({referralItems.length})</span>
+                        <button
+                          type="button"
+                          onClick={() => setReferralItems([])}
+                          className="text-[10px] text-red-600 hover:underline font-bold"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+                      <div className="divide-y divide-slate-100 text-xs">
+                        {referralItems.map((item, idx) => (
+                          <div key={idx} className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-slate-50 transition">
+                            <div className="min-w-0 flex-1">
+                              <span className="font-bold text-[#073b66] block truncate">{item.name}</span>
+                              <span className="text-[10px] text-slate-400 uppercase font-semibold">{item.itemType}</span>
+                            </div>
+                            <div className="text-right text-xs whitespace-nowrap">
+                              <span className="text-[11px] text-slate-400 line-through mr-2">
+                                MRP ₹{(item.mrpPaise / 100).toLocaleString('en-IN')}
+                              </span>
+                              <span className="font-black text-[#073b66]">
+                                ₹{(item.finalPricePaise / 100).toLocaleString('en-IN')}
+                              </span>
+                              <span className="block text-[10px] text-emerald-600 font-bold">
+                                Saved ₹{(item.discountPaise / 100).toLocaleString('en-IN')} ({discountPercent}%)
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveReferralItem(idx)}
+                              className="text-slate-400 hover:text-red-600 p-1 rounded-lg transition"
+                              title="Remove item"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
+
+                  {/* Live Transparent Price Calculator Breakdown */}
+                  <div className="rounded-2xl border-2 border-cyan-200 bg-gradient-to-br from-cyan-50/70 to-white p-4 text-xs space-y-2.5">
+                    <div className="flex items-center justify-between text-slate-600 font-semibold">
+                      <span>Total Original MRP ({activeReferralList.length} items):</span>
+                      <span className="font-mono text-slate-700">
+                        ₹{(liveTotalMrpPaise / 100).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between font-bold text-emerald-700">
+                      <span>Your Authorized Doctor Discount ({discountPercent}%):</span>
+                      <span className="font-mono">
+                        -₹{(liveDiscountPaise / 100).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <div className="pt-2 border-t border-cyan-200/80 flex items-center justify-between font-black text-base text-[#073b66]">
+                      <span>Final Patient Payable Amount:</span>
+                      <span className="font-mono text-lg text-cyan-900">
+                        ₹{(livePayablePaise / 100).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+
+                    <p className="text-[10px] text-slate-400 pt-1 font-medium">
+                      ✓ Snapshot of listed MRP and doctor discount is immutably stored with the booking reference for historical audits.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Appointment Schedule & Visit Type */}
@@ -1165,6 +1522,308 @@ export function DoctorDashboardPage() {
         )}
 
       </div>
+
+      {/* ========================================================
+          MODAL 1: PATIENT REFERRAL DETAILED VIEW
+         ======================================================== */}
+      {selectedPatientDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl animate-scaleUp space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <span className="font-mono text-xs font-bold text-cyan-700 block">{selectedPatientDetail.reference}</span>
+                <h3 className="text-lg font-black text-[#073b66]">{selectedPatientDetail.patientName}</h3>
+              </div>
+              <button
+                onClick={() => setSelectedPatientDetail(null)}
+                className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Quick Meta Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                <span className="text-slate-400 block text-[10px] uppercase font-bold">Contact</span>
+                <strong className="text-slate-800">{selectedPatientDetail.phone}</strong>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                <span className="text-slate-400 block text-[10px] uppercase font-bold">Age / Gender</span>
+                <strong className="text-slate-800">
+                  {selectedPatientDetail.age ? `${selectedPatientDetail.age} yrs` : 'N/A'} • {selectedPatientDetail.gender || 'N/A'}
+                </strong>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                <span className="text-slate-400 block text-[10px] uppercase font-bold">Appointment</span>
+                <strong className="text-slate-800">{selectedPatientDetail.date}</strong>
+                <span className="block text-[10px] text-slate-500">{selectedPatientDetail.timeSlot}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                <span className="text-slate-400 block text-[10px] uppercase font-bold">Collection</span>
+                <strong className="text-slate-800 capitalize">
+                  {selectedPatientDetail.collectionType === 'home' ? 'Home Sample' : 'Centre Visit'}
+                </strong>
+              </div>
+            </div>
+
+            {/* Prescribed Investigations Breakdown */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                Prescribed Pathology Investigations
+              </h4>
+              <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b border-slate-200">
+                    <tr>
+                      <th className="p-2.5">Test / Package</th>
+                      <th className="p-2.5 text-right">MRP</th>
+                      <th className="p-2.5 text-right">Doctor Discount</th>
+                      <th className="p-2.5 text-right">Patient Price</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {selectedPatientDetail.items?.map((it, idx) => {
+                      const itemMrp = (it.mrpPaise || it.pricePaise || 0) / 100
+                      const itemDiscount = (it.discountPaise || Math.round((it.mrpPaise || it.pricePaise || 0) * (selectedPatientDetail.doctorDiscountPercent / 100))) / 100
+                      const itemFinal = (it.finalPricePaise || Math.max(0, (it.mrpPaise || it.pricePaise || 0) - (it.discountPaise || 0))) / 100
+
+                      return (
+                        <tr key={idx}>
+                          <td className="p-2.5">
+                            <strong className="text-[#073b66] block">{it.name}</strong>
+                            <span className="text-[10px] text-slate-400 uppercase font-semibold">{it.itemType}</span>
+                          </td>
+                          <td className="p-2.5 text-right text-slate-500 font-mono">₹{itemMrp.toLocaleString('en-IN')}</td>
+                          <td className="p-2.5 text-right text-emerald-700 font-mono">-₹{itemDiscount.toLocaleString('en-IN')}</td>
+                          <td className="p-2.5 text-right text-slate-800 font-mono font-bold">₹{itemFinal.toLocaleString('en-IN')}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Financial Ledger Snapshot */}
+            <div className="rounded-2xl bg-cyan-50/70 border border-cyan-200 p-4 text-xs space-y-2">
+              <div className="flex items-center justify-between text-slate-600 font-semibold">
+                <span>Total Original Listed MRP:</span>
+                <span className="font-mono">₹{((selectedPatientDetail.originalMrpPaise || 0) / 100).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex items-center justify-between text-emerald-700 font-bold">
+                <span>Your Referral Discount ({selectedPatientDetail.doctorDiscountPercent || discountPercent}%):</span>
+                <span className="font-mono">-₹{((selectedPatientDetail.discountAmountPaise || 0) / 100).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="pt-2 border-t border-cyan-200 flex items-center justify-between font-black text-sm text-[#073b66]">
+                <span>Total Invoiced to Patient:</span>
+                <span className="font-mono text-base text-cyan-900">₹{((selectedPatientDetail.totalAmountPaise || 0) / 100).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] pt-1 text-slate-500 border-t border-cyan-100">
+                <span>Payment State:</span>
+                <span className="font-bold uppercase text-slate-800">
+                  {selectedPatientDetail.paymentStatus === 'paid' ? 'Paid in Full' : 'Due at Lab Desk'}
+                </span>
+              </div>
+            </div>
+
+            {/* Clinical Prescription Notes */}
+            {selectedPatientDetail.adminNotes && (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs text-slate-700 space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Prescription Notes</span>
+                <p>{selectedPatientDetail.adminNotes}</p>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <button
+                onClick={() => {
+                  setPrintableReceipt(selectedPatientDetail)
+                  setSelectedPatientDetail(null)
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+              >
+                <Printer size={14} />
+                <span>Print Referral Slip</span>
+              </button>
+
+              <button
+                onClick={() => setSelectedPatientDetail(null)}
+                className="rounded-xl bg-[#073b66] px-5 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
+          MODAL 2: PRINTABLE PATIENT REFERRAL SLIP / BILL
+         ======================================================== */}
+      {printableReceipt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 sm:p-8 shadow-2xl animate-scaleUp space-y-6">
+            
+            {/* Action Bar (Hidden during print) */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 no-print">
+              <span className="text-xs font-bold text-slate-500">Print Preview</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => window.print()}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#073b66] px-4 py-2 text-xs font-black text-white hover:bg-cyan-700 shadow transition"
+                >
+                  <Printer size={14} />
+                  <span>Print Slip / Save as PDF</span>
+                </button>
+                <button
+                  onClick={() => setPrintableReceipt(null)}
+                  className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Document Sheet */}
+            <div className="printable-sheet space-y-5 text-slate-800 font-sans border border-slate-200 p-6 rounded-2xl bg-white">
+              
+              {/* Header Branding */}
+              <div className="flex items-center justify-between border-b-2 border-[#073b66] pb-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="grid h-8 w-8 place-items-center rounded-lg bg-[#073b66] text-white">
+                      <Stethoscope size={18} />
+                    </div>
+                    <span className="text-lg font-black tracking-tight text-[#073b66]">UNIQUE PATHOLOGY</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-semibold mt-1">
+                    Advanced Diagnostic Laboratory & Clinical Testing Centre
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Bhopal-Hoshangabad Road, Mandideep Region, M.P. • Ph: +91 89620 38429
+                  </p>
+                </div>
+
+                <div className="text-right">
+                  <span className="inline-block rounded-md bg-cyan-100 text-cyan-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider">
+                    Official Referral Slip
+                  </span>
+                  <div className="font-mono text-xs font-black text-[#073b66] mt-1.5">
+                    {printableReceipt.reference}
+                  </div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Issued: {new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </span>
+                </div>
+              </div>
+
+              {/* Doctor & Patient Metadata */}
+              <div className="grid grid-cols-2 gap-4 text-xs bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                <div className="space-y-1">
+                  <span className="text-[10px] font-black uppercase text-slate-400 block">Referring Medical Consultant</span>
+                  <strong className="text-slate-800 text-sm block">{doctor?.name}</strong>
+                  <div className="text-[11px] text-slate-600 font-medium">
+                    {doctor?.qualification} • {doctor?.specialization}
+                  </div>
+                  <div className="text-[10px] text-slate-500">{doctor?.clinicName}</div>
+                </div>
+
+                <div className="space-y-1 text-right sm:text-left">
+                  <span className="text-[10px] font-black uppercase text-slate-400 block">Patient Information</span>
+                  <strong className="text-slate-800 text-sm block">{printableReceipt.patientName}</strong>
+                  <div className="text-[11px] text-slate-600">
+                    Ph: {printableReceipt.phone}
+                    {printableReceipt.age ? ` • Age: ${printableReceipt.age}y` : ''}
+                    {printableReceipt.gender && printableReceipt.gender !== 'prefer_not_to_say' ? ` • ${printableReceipt.gender}` : ''}
+                  </div>
+                  <div className="text-[10px] text-slate-500">
+                    Mode: {printableReceipt.collectionType === 'home' ? 'Home Collection' : 'Centre Visit'} • {printableReceipt.date} ({printableReceipt.timeSlot})
+                  </div>
+                </div>
+              </div>
+
+              {/* Items Table */}
+              <div className="space-y-2">
+                <span className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Prescribed Diagnostics</span>
+                <table className="w-full text-left text-xs border border-slate-200 rounded-xl overflow-hidden">
+                  <thead className="bg-slate-100 text-[10px] font-bold text-slate-600 border-b border-slate-200">
+                    <tr>
+                      <th className="p-2">#</th>
+                      <th className="p-2">Investigation Description</th>
+                      <th className="p-2 text-right">Standard MRP</th>
+                      <th className="p-2 text-right">Doctor Discount</th>
+                      <th className="p-2 text-right">Patient Payable</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {printableReceipt.items?.map((it, idx) => {
+                      const mrp = (it.mrpPaise || it.pricePaise || 0) / 100
+                      const disc = (it.discountPaise || Math.round((it.mrpPaise || it.pricePaise || 0) * (printableReceipt.doctorDiscountPercent / 100))) / 100
+                      const payable = (it.finalPricePaise || Math.max(0, (it.mrpPaise || it.pricePaise || 0) - (it.discountPaise || 0))) / 100
+
+                      return (
+                        <tr key={idx}>
+                          <td className="p-2 text-slate-400 font-mono text-[10px]">{idx + 1}</td>
+                          <td className="p-2">
+                            <span className="font-bold text-[#073b66]">{it.name}</span>
+                            <span className="text-[10px] text-slate-400 uppercase ml-1">({it.itemType})</span>
+                          </td>
+                          <td className="p-2 text-right text-slate-500 font-mono">₹{mrp.toLocaleString('en-IN')}</td>
+                          <td className="p-2 text-right text-emerald-700 font-mono">-₹{disc.toLocaleString('en-IN')}</td>
+                          <td className="p-2 text-right text-slate-800 font-mono font-black">₹{payable.toLocaleString('en-IN')}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Financial Summary */}
+              <div className="flex justify-end">
+                <div className="w-full sm:w-72 rounded-xl bg-slate-50 p-3.5 border border-slate-200 space-y-1.5 text-xs">
+                  <div className="flex justify-between text-slate-500">
+                    <span>Total Original MRP:</span>
+                    <span className="font-mono">₹{((printableReceipt.originalMrpPaise || 0) / 100).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between text-emerald-700 font-bold">
+                    <span>Doctor Referral Discount ({printableReceipt.doctorDiscountPercent || discountPercent}%):</span>
+                    <span className="font-mono">-₹{((printableReceipt.discountAmountPaise || 0) / 100).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="pt-1.5 border-t border-slate-200 flex justify-between font-black text-sm text-[#073b66]">
+                    <span>Net Amount Payable:</span>
+                    <span className="font-mono text-base text-cyan-900">
+                      ₹{((printableReceipt.totalAmountPaise || 0) / 100).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="pt-1 border-t border-slate-200 flex justify-between text-[10px] text-slate-500">
+                    <span>Payment Status:</span>
+                    <span className="font-bold uppercase text-slate-700">
+                      {printableReceipt.paymentStatus === 'paid' ? '✓ Paid' : 'Payment Due at Collection'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Compliance & Verification Footer */}
+              <div className="border-t border-slate-200 pt-3 flex items-end justify-between text-[10px] text-slate-400">
+                <div className="space-y-0.5">
+                  <p>• Fasting instructions: Please observe protocol advised by referring consultant.</p>
+                  <p>• Authentic QR report download enabled on test completion at uniquepathology.com/reports</p>
+                  <p>• Verified partner diagnostic slip under Unique Pathology Mandideep clinical network.</p>
+                </div>
+                <div className="text-right">
+                  <div className="h-9 w-24 border-b border-slate-400 mb-1 mx-auto" />
+                  <span className="text-[9px] uppercase font-bold text-slate-500">Authorized Lab Desk</span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

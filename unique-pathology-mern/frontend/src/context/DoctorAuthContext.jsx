@@ -80,7 +80,15 @@ export function DoctorAuthProvider({ children }) {
 export function useDoctorAuth() {
   const context = useContext(DoctorAuthContext)
   if (!context) {
-    throw new Error('useDoctorAuth must be used within a DoctorAuthProvider')
+    return {
+      token: '',
+      doctor: null,
+      isAuthenticated: false,
+      loading: false,
+      login: async () => {},
+      logout: () => {},
+      refreshDoctor: async () => null,
+    }
   }
   return context
 }

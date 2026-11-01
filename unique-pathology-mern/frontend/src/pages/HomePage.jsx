@@ -434,68 +434,31 @@ export function HomePage({ publicConfig }) {
         </section>
       )}
 
-      {/* PROFESSIONAL PORTALS ACCESS BANNER (DOCTOR & ADMIN) */}
+      {/* PROFESSIONAL PORTALS ACCESS BANNER (ADMIN & STAFF) */}
       <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 -mt-6 sm:-mt-10 relative z-20 reveal-on-scroll">
-        <div className="grid gap-4 sm:grid-cols-2">
-          {/* Card 1: Doctor Portal */}
-          <div className="rounded-3xl border-2 border-cyan-200 bg-gradient-to-br from-cyan-50/90 via-white to-cyan-50/40 p-6 sm:p-7 shadow-lg shadow-cyan-950/5 flex flex-col justify-between hover:border-cyan-400 transition group">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="grid h-12 w-12 place-items-center rounded-2xl bg-cyan-600 text-white shadow-md group-hover:scale-105 transition">
-                  <Stethoscope size={24} />
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-black">
-                  <Percent size={13} />
-                  <span>Custom Concession Tariffs</span>
-                </span>
-              </div>
-              <h3 className="text-xl font-black text-[#073b66]">Doctor Referral Portal</h3>
-              <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                Registered clinicians and clinic partners: Log in with your mobile / email to track referred patients, view real-time test status, and book direct requisitions with your dynamic discount.
-              </p>
+        <div className="rounded-3xl border-2 border-slate-200 bg-gradient-to-br from-slate-900 via-[#073b66] to-[#052944] p-6 sm:p-8 text-white shadow-lg flex flex-col sm:flex-row items-center justify-between gap-6 hover:border-cyan-400/60 transition group">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="grid h-10 w-10 place-items-center rounded-2xl bg-white/10 text-cyan-300 border border-white/15">
+                <ShieldCheck size={20} />
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-cyan-900/80 text-cyan-200 px-3 py-1 text-xs font-black border border-cyan-700/60">
+                <span>Laboratory Operations Console</span>
+              </span>
             </div>
-            <div className="pt-5 flex items-center gap-3">
-              <Link
-                to="/doctor/login"
-                className="flex-1 text-center rounded-xl bg-cyan-600 px-5 py-3 text-xs sm:text-sm font-extrabold text-white shadow-md hover:bg-cyan-700 active:scale-95 transition flex items-center justify-center gap-2"
-              >
-                <span>Doctor Portal Login</span>
-                <ArrowRight size={15} />
-              </Link>
-              <Link
-                to="/contact?type=doctor"
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-xs font-bold text-[#073b66] hover:bg-slate-50 transition"
-              >
-                Join Network
-              </Link>
-            </div>
+            <h3 className="text-xl sm:text-2xl font-black text-white">Laboratory Administration Portal</h3>
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+              Mandideep centre management & staff: Log in to manage patient appointments, record doctor referral bookings, govern test catalogues, track doctor financial ledgers, and release diagnostic reports.
+            </p>
           </div>
-
-          {/* Card 2: Staff & Admin Portal */}
-          <div className="rounded-3xl border-2 border-slate-200 bg-gradient-to-br from-slate-900 via-[#073b66] to-[#052944] p-6 sm:p-7 text-white shadow-lg flex flex-col justify-between hover:border-cyan-400/60 transition group">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-cyan-300 border border-white/15 group-hover:scale-105 transition">
-                  <ShieldCheck size={24} />
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-cyan-900/80 text-cyan-200 px-3 py-1 text-xs font-black border border-cyan-700/60">
-                  <span>Lab Operations Console</span>
-                </span>
-              </div>
-              <h3 className="text-xl font-black text-white">Laboratory Admin Portal</h3>
-              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                Mandideep centre management & staff: Log in to manage patient appointments, update test catalogues, govern doctor accounts and discounts, and release encrypted diagnostic reports.
-              </p>
-            </div>
-            <div className="pt-5 flex items-center gap-3">
-              <Link
-                to="/admin/login"
-                className="flex-1 text-center rounded-xl bg-cyan-500 hover:bg-cyan-400 px-5 py-3 text-xs sm:text-sm font-black text-[#052944] shadow-md active:scale-95 transition flex items-center justify-center gap-2"
-              >
-                <span>Admin / Staff Login</span>
-                <ArrowRight size={15} />
-              </Link>
-            </div>
+          <div className="shrink-0 w-full sm:w-auto">
+            <Link
+              to="/admin/login"
+              className="inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-2xl bg-cyan-500 hover:bg-cyan-400 px-6 py-3.5 text-xs sm:text-sm font-black text-[#052944] shadow-md active:scale-95 transition"
+            >
+              <span>Admin / Staff Login</span>
+              <ArrowRight size={15} />
+            </Link>
           </div>
         </div>
       </section>

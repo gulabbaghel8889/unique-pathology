@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext.jsx'
-import { DoctorAuthProvider } from './context/DoctorAuthContext.jsx'
 import { Navbar } from './components/Navbar.jsx'
 import { Footer } from './components/Footer.jsx'
 import { WhatsAppButton } from './components/WhatsAppButton.jsx'
@@ -21,16 +20,12 @@ import { PrivacyPolicyPage } from './pages/PrivacyPolicyPage.jsx'
 import { TermsPage } from './pages/TermsPage.jsx'
 import { AdminLoginPage } from './pages/AdminLoginPage.jsx'
 import { AdminDashboardPage } from './pages/AdminDashboardPage.jsx'
-import { DoctorLoginPage } from './pages/DoctorLoginPage.jsx'
-import { DoctorDashboardPage } from './pages/DoctorDashboardPage.jsx'
-import { PortalLoginPage } from './pages/PortalLoginPage.jsx'
 import { apiRequest } from './api.js'
 
 function AppContent() {
   const location = useLocation()
   const isAdminDashboard = location.pathname.startsWith('/admin') && location.pathname !== '/admin/login'
-  const isDoctorDashboard = location.pathname.startsWith('/doctor') && location.pathname !== '/doctor/login'
-  const isPortalView = isAdminDashboard || isDoctorDashboard
+  const isPortalView = isAdminDashboard
 
   const [publicConfig, setPublicConfig] = useState(null)
 
@@ -74,9 +69,9 @@ function AppContent() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/admin/login" element={<AdminLoginPage />} />
           <Route path="/admin" element={<AdminDashboardPage />} />
-          <Route path="/doctor/login" element={<DoctorLoginPage />} />
-          <Route path="/doctor" element={<DoctorDashboardPage />} />
-          <Route path="/login" element={<PortalLoginPage />} />
+          <Route path="/doctor/login" element={<Navigate to="/admin/login" replace />} />
+          <Route path="/doctor" element={<Navigate to="/admin/login" replace />} />
+          <Route path="/login" element={<Navigate to="/admin/login" replace />} />
           <Route path="*" element={<HomePage publicConfig={publicConfig} />} />
         </Routes>
       </main>
@@ -102,9 +97,7 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <DoctorAuthProvider>
-          <AppContent />
-        </DoctorAuthProvider>
+        <AppContent />
       </AuthProvider>
     </BrowserRouter>
   )

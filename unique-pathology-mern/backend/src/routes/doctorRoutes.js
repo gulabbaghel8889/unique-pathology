@@ -11,6 +11,7 @@ import { Booking } from '../models/Booking.js'
 import { Test } from '../models/Test.js'
 import { Package } from '../models/Package.js'
 import { Report } from '../models/Report.js'
+import { FinancialLedger } from '../models/FinancialLedger.js'
 import { recordAudit } from '../services/auditService.js'
 
 export const doctorRouter = express.Router()
@@ -287,7 +288,7 @@ doctorRouter.get('/doctor/dashboard', requireDoctor, async (req, res, next) => {
 doctorRouter.get('/doctor/patients', requireDoctor, async (req, res, next) => {
   try {
     const doctorId = req.doctor._id
-    const { search, status, page = 1, limit = 20 } = req.query
+    const { search, status, paymentStatus, startDate, endDate, page = 1, limit = 20 } = req.query
 
     const query = {
       $or: [{ doctorId }, { doctorName: req.doctor.name }],
@@ -297,45 +298,138 @@ doctorRouter.get('/doctor/patients', requireDoctor, async (req, res, next) => {
       query.status = status
     }
 
+    if (paymentStatus && paymentStatus !== 'all') {
+      query.paymentStatus = paymentStatus
+    }
+
+    if (startDate && endDate) {
+      query.date = { $gte: String(startDate), $lte: String(endDate) }
+    } else if (startDate) {
+      query.date = { $gte: String(startDate) }
+    } else if (endDate) {
+      query.date = { $lte: String(endDate) }
+    }
+
     if (search && typeof search === 'string' && search.trim()) {
       const term = search.trim()
       const regex = new RegExp(term, 'i')
-      query.$or = [{ patientName: regex }, { phone: regex }, { reference: regex }]
+      query.$and = [
+        {
+          $or: [
+            { patientName: regex },
+            { phone: regex },
+            { reference: regex },
+            { 'items.name': regex },
+          ],
+        },
+      ]
     }
 
-    const skip = (Number(page) - 1) * Number(limit)
+    const pageNum = Math.max(1, Number(page) || 1)
+    const limitNum = Math.max(1, Math.min(100, Number(limit) || 20))
+    const skip = (pageNum - 1) * limitNum
+
     const [rawBookings, total] = await Promise.all([
-      Booking.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      Booking.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
       Booking.countDocuments(query),
     ])
 
-    // Strip financial/payment data — doctors only see clinical info per business rules
-    const bookings = rawBookings.map((b) => ({
-      _id: b._id,
-      reference: b.reference,
-      patientName: b.patientName,
-      phone: b.phone,
-      email: b.email,
-      age: b.age,
-      gender: b.gender,
-      date: b.date,
-      timeSlot: b.timeSlot,
-      collectionType: b.collectionType,
-      address: b.address,
-      status: b.status,
-      items: b.items,
-      doctorDiscountPercent: b.doctorDiscountPercent,
-      discountApplied: (b.discountAmountPaise || 0) > 0 || (b.doctorDiscountPercent || 0) > 0,
-      createdAt: b.createdAt,
-    }))
+    // Fetch reports for these bookings to show report release status
+    const references = rawBookings.map((b) => b.reference)
+    const reports = await Report.find({
+      bookingReference: { $in: references },
+    }).lean()
+
+    const reportMap = new Map()
+    reports.forEach((r) => {
+      reportMap.set(r.bookingReference, r)
+    })
+
+    const bookings = rawBookings.map((b) => {
+      const rep = reportMap.get(b.reference)
+      const originalMrp = b.originalMrpPaise && b.originalMrpPaise > 0
+        ? b.originalMrpPaise
+        : (b.subtotalPaise || b.totalAmountPaise || 0)
+
+      const discountAmt = b.discountAmountPaise || 0
+      const finalPayable = b.totalAmountPaise || Math.max(0, originalMrp - discountAmt)
+
+      const amountPaid = b.amountPaidPaise !== undefined
+        ? b.amountPaidPaise
+        : (b.paymentStatus === 'paid' ? finalPayable : 0)
+
+      const outstanding = b.outstandingAmountPaise !== undefined
+        ? b.outstandingAmountPaise
+        : Math.max(0, finalPayable - amountPaid)
+
+      // Sample collection status logic
+      let sampleCollectionStatus = 'Scheduled'
+      if (b.status === 'sample_collected') {
+        sampleCollectionStatus = 'Sample Collected'
+      } else if (b.status === 'processing') {
+        sampleCollectionStatus = 'Sample in Laboratory'
+      } else if (b.status === 'completed') {
+        sampleCollectionStatus = 'Testing Completed'
+      } else if (b.status === 'cancelled') {
+        sampleCollectionStatus = 'Cancelled'
+      } else if (b.collectionType === 'home') {
+        sampleCollectionStatus = 'Home Phlebotomy Pending'
+      } else {
+        sampleCollectionStatus = 'Centre Walk-in Pending'
+      }
+
+      // Report status
+      let reportStatus = 'not_generated'
+      if (rep) {
+        reportStatus = rep.status === 'released' ? 'released' : 'processing'
+      } else if (b.status === 'completed') {
+        reportStatus = 'released'
+      } else if (['sample_collected', 'processing'].includes(b.status)) {
+        reportStatus = 'processing'
+      }
+
+      return {
+        _id: b._id,
+        reference: b.reference,
+        patientName: b.patientName,
+        phone: b.phone,
+        email: b.email,
+        age: b.age,
+        gender: b.gender,
+        date: b.date,
+        timeSlot: b.timeSlot,
+        collectionType: b.collectionType,
+        address: b.address,
+        landmark: b.landmark,
+        city: b.city,
+        pinCode: b.pinCode,
+        status: b.status,
+        paymentStatus: b.paymentStatus || 'not_started',
+        sampleCollectionStatus,
+        reportStatus,
+        reportId: rep ? String(rep._id) : null,
+        reportTitle: rep ? rep.reportTitle : null,
+        releasedAt: rep ? rep.releasedAt : null,
+        items: b.items || [],
+        originalMrpPaise: originalMrp,
+        doctorDiscountPercent: b.doctorDiscountPercent || 0,
+        discountAmountPaise: discountAmt,
+        totalAmountPaise: finalPayable,
+        amountPaidPaise: amountPaid,
+        outstandingAmountPaise: outstanding,
+        discountApplied: discountAmt > 0 || (b.doctorDiscountPercent || 0) > 0,
+        adminNotes: b.adminNotes,
+        createdAt: b.createdAt,
+      }
+    })
 
     res.json({
       bookings,
       pagination: {
-        page: Number(page),
-        limit: Number(limit),
+        page: pageNum,
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / Number(limit)) || 1,
+        totalPages: Math.ceil(total / limitNum) || 1,
       },
     })
   } catch (err) {
@@ -356,12 +450,15 @@ doctorRouter.get('/doctor/tests', requireDoctor, async (req, res, next) => {
       Package.find({ isActive: true }).sort({ isFeatured: -1, pricePaise: 1 }).lean(),
     ])
 
-    // Calculate dynamic doctor pricing
+    // Calculate dynamic doctor pricing based on MRP
     const discountedTests = tests.map((t) => {
-      const discountPaise = Math.round(t.pricePaise * (discountPercent / 100))
-      const doctorPricePaise = Math.max(0, t.pricePaise - discountPaise)
+      const mrpPaise = (t.mrpPaise && t.mrpPaise > 0) ? t.mrpPaise : t.pricePaise
+      const discountPaise = Math.round(mrpPaise * (discountPercent / 100))
+      const doctorPricePaise = Math.max(0, mrpPaise - discountPaise)
       return {
         ...t,
+        mrpPaise,
+        originalMrpPaise: mrpPaise,
         originalPricePaise: t.pricePaise,
         discountPercent,
         discountPaise,
@@ -370,10 +467,13 @@ doctorRouter.get('/doctor/tests', requireDoctor, async (req, res, next) => {
     })
 
     const discountedPackages = packages.map((p) => {
-      const discountPaise = Math.round(p.pricePaise * (discountPercent / 100))
-      const doctorPricePaise = Math.max(0, p.pricePaise - discountPaise)
+      const mrpPaise = (p.mrpPaise && p.mrpPaise > 0) ? p.mrpPaise : p.pricePaise
+      const discountPaise = Math.round(mrpPaise * (discountPercent / 100))
+      const doctorPricePaise = Math.max(0, mrpPaise - discountPaise)
       return {
         ...p,
+        mrpPaise,
+        originalMrpPaise: mrpPaise,
         originalPricePaise: p.pricePaise,
         discountPercent,
         discountPaise,
@@ -408,6 +508,7 @@ const doctorReferralSchema = z.object({
         itemType: z.enum(['test', 'package']),
         name: z.string().trim().min(1),
         id: z.string().optional(),
+        quantity: z.coerce.number().min(1).default(1).optional(),
       })
     )
     .min(1, 'Please select at least one test or package to refer.'),
@@ -449,27 +550,38 @@ doctorRouter.post('/doctor/bookings', requireDoctor, async (req, res, next) => {
     const discountPercent = doctor.discountPercent || 0
     const commissionPercent = doctor.commissionPercent || 0
 
-    // Resolve items and calculate tariffs
+    // Resolve items and calculate authoritative tariffs with snapshots
     const resolvedItems = []
+    let originalMrpPaise = 0
     let subtotalPaise = 0
     let hasUnverified = false
 
     for (const item of data.items) {
+      const qty = Math.max(1, Number(item.quantity) || 1)
       if (item.itemType === 'package') {
         const pkg = await Package.findOne({
           $or: [{ name: item.name }, ...(item.id ? [{ _id: item.id }] : [])],
           isActive: true,
         })
         if (pkg) {
+          const itemMrpPaise = ((pkg.mrpPaise && pkg.mrpPaise > 0) ? pkg.mrpPaise : pkg.pricePaise) * qty
+          const itemBasePaise = pkg.pricePaise * qty
+          const itemDiscountPaise = Math.round(itemMrpPaise * (discountPercent / 100))
+          const itemFinalPricePaise = Math.max(0, itemMrpPaise - itemDiscountPaise)
+
           resolvedItems.push({
             itemType: 'package',
             itemId: pkg._id,
-            name: pkg.name,
+            name: qty > 1 ? `${pkg.name} (x${qty})` : pkg.name,
             code: pkg.code,
-            pricePaise: pkg.pricePaise,
+            pricePaise: itemBasePaise,
+            mrpPaise: itemMrpPaise,
+            discountPaise: itemDiscountPaise,
+            finalPricePaise: itemFinalPricePaise,
             isVerifiedPrice: pkg.isVerifiedPrice,
           })
-          subtotalPaise += pkg.pricePaise
+          originalMrpPaise += itemMrpPaise
+          subtotalPaise += itemBasePaise
           if (!pkg.isVerifiedPrice) hasUnverified = true
         }
       } else {
@@ -478,15 +590,24 @@ doctorRouter.post('/doctor/bookings', requireDoctor, async (req, res, next) => {
           isActive: true,
         })
         if (test) {
+          const itemMrpPaise = ((test.mrpPaise && test.mrpPaise > 0) ? test.mrpPaise : test.pricePaise) * qty
+          const itemBasePaise = test.pricePaise * qty
+          const itemDiscountPaise = Math.round(itemMrpPaise * (discountPercent / 100))
+          const itemFinalPricePaise = Math.max(0, itemMrpPaise - itemDiscountPaise)
+
           resolvedItems.push({
             itemType: 'test',
             itemId: test._id,
-            name: test.name,
+            name: qty > 1 ? `${test.name} (x${qty})` : test.name,
             code: test.shortCode,
-            pricePaise: test.pricePaise,
+            pricePaise: itemBasePaise,
+            mrpPaise: itemMrpPaise,
+            discountPaise: itemDiscountPaise,
+            finalPricePaise: itemFinalPricePaise,
             isVerifiedPrice: test.isVerifiedPrice,
           })
-          subtotalPaise += test.pricePaise
+          originalMrpPaise += itemMrpPaise
+          subtotalPaise += itemBasePaise
           if (!test.isVerifiedPrice) hasUnverified = true
         }
       }
@@ -496,10 +617,10 @@ doctorRouter.post('/doctor/bookings', requireDoctor, async (req, res, next) => {
       return res.status(400).json({ message: 'No valid tests or packages found to refer.' })
     }
 
-    // Dynamic Doctor Discount Calculation
-    const discountAmountPaise = Math.round(subtotalPaise * (discountPercent / 100))
-    const totalAmountPaise = Math.max(0, subtotalPaise - discountAmountPaise)
-    const commissionPaise = Math.round(subtotalPaise * (commissionPercent / 100))
+    // Dynamic Doctor Discount Calculation (authoritative backend calculation)
+    const discountAmountPaise = Math.round(originalMrpPaise * (discountPercent / 100))
+    const totalAmountPaise = Math.max(0, originalMrpPaise - discountAmountPaise)
+    const commissionPaise = Math.round(originalMrpPaise * (commissionPercent / 100))
 
     // Generate unique reference
     let reference = generateBookingReference()
@@ -515,9 +636,15 @@ doctorRouter.post('/doctor/bookings', requireDoctor, async (req, res, next) => {
       age: data.age,
       gender: data.gender,
       items: resolvedItems,
+      originalMrpPaise,
       subtotalPaise,
       discountAmountPaise,
       totalAmountPaise,
+      amountPaidPaise: 0,
+      outstandingAmountPaise: totalAmountPaise,
+      amountRefundedPaise: 0,
+      authorizedServicePaymentPaise: 0,
+      settlementStatus: 'pending',
       hasUnverifiedPrices: hasUnverified,
       doctorId: doctor._id,
       doctorName: doctor.name,
@@ -552,6 +679,7 @@ doctorRouter.post('/doctor/bookings', requireDoctor, async (req, res, next) => {
       targetReference: booking.reference,
       details: {
         doctorName: doctor.name,
+        originalMrpPaise,
         discountPercent,
         discountAmountPaise,
         totalAmountPaise,

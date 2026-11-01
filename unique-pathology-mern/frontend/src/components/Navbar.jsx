@@ -71,15 +71,6 @@ export function Navbar({ publicConfig }) {
               </span>
             )}
 
-            {/* Quick Doctor Portal link */}
-            <Link
-              to="/doctor/login"
-              className="text-cyan-300 hover:text-white transition flex items-center gap-1 font-bold border-l border-cyan-800/80 pl-3"
-            >
-              <Stethoscope size={12} className="text-cyan-400" />
-              <span>Doctor Portal</span>
-            </Link>
-
             {/* Quick Admin Portal link */}
             <Link
               to="/admin/login"
@@ -210,15 +201,6 @@ export function Navbar({ publicConfig }) {
                 >
                   Book a Test / Home Collection
                   <ArrowRight size={16} />
-                </Link>
-
-                <Link
-                  to="/doctor/login"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="flex items-center justify-center gap-2 rounded-xl border border-cyan-300 bg-cyan-50/80 py-3 text-sm font-extrabold text-[#073b66]"
-                >
-                  <Stethoscope size={18} className="text-cyan-600" />
-                  Doctor Portal Login
                 </Link>
 
                 <Link

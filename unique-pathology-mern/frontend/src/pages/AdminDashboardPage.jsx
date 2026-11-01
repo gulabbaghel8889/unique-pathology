@@ -42,6 +42,14 @@ import {
   Calendar,
   ExternalLink,
   Download,
+  Receipt,
+  Printer,
+  FileSpreadsheet,
+  RotateCcw,
+  DollarSign,
+  Filter,
+  ArrowUpDown,
+  FileCheck2,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { apiRequest, API_BASE, getAdminToken } from '../api.js'
@@ -201,6 +209,650 @@ export function AdminDashboardPage() {
   const [uploadPathologist, setUploadPathologist] = useState('Duty Clinical Pathologist')
   const [selectedFile, setSelectedFile] = useState(null)
   const [uploadBusy, setUploadBusy] = useState(false)
+
+  // =========================================================================
+  // DOCTOR REFERRALS & FINANCIAL LEDGER STATE
+  // =========================================================================
+  const [referralSubView, setReferralSubView] = useState('ledger') // 'ledger' | 'statements'
+  const [referrals, setReferrals] = useState([])
+  const [referralsSummary, setReferralsSummary] = useState({
+    totalBookings: 0,
+    totalMrpPaise: 0,
+    totalDoctorDiscountPaise: 0,
+    totalPayablePaise: 0,
+    totalPaidPaise: 0,
+    totalOutstandingPaise: 0,
+    totalRefundedPaise: 0,
+    totalAuthorizedServicePaymentPaise: 0,
+    totalLabNetRetainedPaise: 0,
+  })
+  const [referralsLoading, setReferralsLoading] = useState(false)
+  const [referralsPagination, setReferralsPagination] = useState({ page: 1, limit: 20, total: 0, pages: 1 })
+
+  // Referral Filters
+  const [refDoctorFilter, setRefDoctorFilter] = useState('all')
+  const [refSearch, setRefSearch] = useState('')
+  const [refBookingId, setRefBookingId] = useState('')
+  const [refStartDate, setRefStartDate] = useState('')
+  const [refEndDate, setRefEndDate] = useState('')
+  const [refTestOrPackage, setRefTestOrPackage] = useState('')
+  const [refStatusFilter, setRefStatusFilter] = useState('all')
+  const [refPaymentFilter, setRefPaymentFilter] = useState('all')
+  const [refSettlementFilter, setRefSettlementFilter] = useState('all')
+  const [refSortBy, setRefSortBy] = useState('createdAt')
+  const [refSortOrder, setRefSortOrder] = useState('desc')
+  const [refPage, setRefPage] = useState(1)
+
+  // Doctor Financial Statements
+  const [doctorStatements, setDoctorStatements] = useState([])
+  const [statementsSummary, setStatementsSummary] = useState(null)
+  const [statementsLoading, setStatementsLoading] = useState(false)
+  const [statementDoctorFilter, setStatementDoctorFilter] = useState('')
+  const [statementStartDate, setStatementStartDate] = useState('')
+  const [statementEndDate, setStatementEndDate] = useState('')
+  const [selectedStatementDrilldown, setSelectedStatementDrilldown] = useState(null)
+
+  // Referral Action Modals State
+  const [refPaymentModalOpen, setRefPaymentModalOpen] = useState(false)
+  const [refPaymentBooking, setRefPaymentBooking] = useState(null)
+  const [refPaymentForm, setRefPaymentForm] = useState({ amount: '', paymentMethod: 'Cash', transactionRef: '', notes: '' })
+  const [refPaymentSubmitting, setRefPaymentSubmitting] = useState(false)
+
+  const [refRefundModalOpen, setRefRefundModalOpen] = useState(false)
+  const [refRefundBooking, setRefRefundBooking] = useState(null)
+  const [refRefundForm, setRefRefundForm] = useState({ refundAmount: '', reason: 'PATIENT_REQUEST', notes: '', reference: '' })
+  const [refRefundSubmitting, setRefRefundSubmitting] = useState(false)
+
+  const [refServiceModalOpen, setRefServiceModalOpen] = useState(false)
+  const [refServiceBooking, setRefServiceBooking] = useState(null)
+  const [refServiceForm, setRefServiceForm] = useState({
+    amount: '',
+    category: 'CLINICAL_SPECIMEN_COLLECTION',
+    agreementRef: '',
+    legalJustification: '',
+    paymentReference: '',
+    notes: '',
+  })
+  const [refServiceSubmitting, setRefServiceSubmitting] = useState(false)
+
+  const [refSettlementModalOpen, setRefSettlementModalOpen] = useState(false)
+  const [refSettlementBooking, setRefSettlementBooking] = useState(null)
+  const [refSettlementForm, setRefSettlementForm] = useState({ settlementStatus: 'SETTLED', notes: '' })
+  const [refSettlementSubmitting, setRefSettlementSubmitting] = useState(false)
+
+  const [referralDetailModalOpen, setReferralDetailModalOpen] = useState(false)
+  const [selectedReferralDetail, setSelectedReferralDetail] = useState(null)
+  const [referralDetailLoading, setReferralDetailLoading] = useState(false)
+
+  const [refPrintModalOpen, setRefPrintModalOpen] = useState(false)
+  const [printReportType, setPrintReportType] = useState('referrals') // 'referrals' | 'doctor-statement'
+  const [printReportPayload, setPrintReportPayload] = useState(null)
+
+  const formatInr = (paise) => {
+    const rs = (Number(paise) || 0) / 100
+    return '₹' + rs.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  }
+
+  async function loadReferralsData() {
+    setReferralsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('page', refPage.toString())
+      params.set('limit', '20')
+      if (refDoctorFilter && refDoctorFilter !== 'all') params.set('doctorId', refDoctorFilter)
+      if (refSearch.trim()) params.set('search', refSearch.trim())
+      if (refBookingId.trim()) params.set('bookingId', refBookingId.trim())
+      if (refStartDate) params.set('startDate', refStartDate)
+      if (refEndDate) params.set('endDate', refEndDate)
+      if (refTestOrPackage.trim()) params.set('testOrPackage', refTestOrPackage.trim())
+      if (refStatusFilter && refStatusFilter !== 'all') params.set('bookingStatus', refStatusFilter)
+      if (refPaymentFilter && refPaymentFilter !== 'all') params.set('paymentStatus', refPaymentFilter)
+      if (refSettlementFilter && refSettlementFilter !== 'all') params.set('settlementStatus', refSettlementFilter)
+      if (refSortBy) params.set('sortBy', refSortBy)
+      if (refSortOrder) params.set('sortOrder', refSortOrder)
+
+      const res = await apiRequest(`/admin/referrals?${params.toString()}`, { authType: 'admin' })
+      setReferrals(res.referrals || [])
+      setReferralsSummary(res.summary || {})
+      setReferralsPagination(res.pagination || { page: 1, limit: 20, total: 0, pages: 1 })
+    } catch (err) {
+      console.error('Error loading referrals:', err.message)
+    } finally {
+      setReferralsLoading(false)
+    }
+  }
+
+  async function loadDoctorStatementsData() {
+    setStatementsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (statementDoctorFilter && statementDoctorFilter !== 'all') params.set('doctorId', statementDoctorFilter)
+      if (statementStartDate) params.set('startDate', statementStartDate)
+      if (statementEndDate) params.set('endDate', statementEndDate)
+
+      const res = await apiRequest(`/admin/doctors-financial-statements?${params.toString()}`, { authType: 'admin' })
+      setDoctorStatements(res.statements || [])
+      setStatementsSummary(res.overallSummary || null)
+    } catch (err) {
+      console.error('Error loading doctor statements:', err.message)
+    } finally {
+      setStatementsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'doctorReferrals') {
+      if (referralSubView === 'ledger') {
+        loadReferralsData()
+      } else {
+        loadDoctorStatementsData()
+      }
+    }
+  }, [
+    activeTab,
+    referralSubView,
+    refDoctorFilter,
+    refSearch,
+    refBookingId,
+    refStartDate,
+    refEndDate,
+    refTestOrPackage,
+    refStatusFilter,
+    refPaymentFilter,
+    refSettlementFilter,
+    refSortBy,
+    refSortOrder,
+    refPage,
+    statementDoctorFilter,
+    statementStartDate,
+    statementEndDate,
+  ])
+
+  async function handleOpenReferralDetail(bookingId) {
+    setReferralDetailLoading(true)
+    setReferralDetailModalOpen(true)
+    try {
+      const res = await apiRequest(`/admin/referrals/${bookingId}`, { authType: 'admin' })
+      setSelectedReferralDetail(res)
+    } catch (err) {
+      alert(`Error loading booking details: ${err.message}`)
+      setReferralDetailModalOpen(false)
+    } finally {
+      setReferralDetailLoading(false)
+    }
+  }
+
+  function handleOpenRefPaymentModal(booking) {
+    setRefPaymentBooking(booking)
+    const dueAmount = Math.max(0, (booking.financials?.patientOutstandingPaise || 0) / 100)
+    setRefPaymentForm({
+      amount: dueAmount > 0 ? dueAmount.toString() : '',
+      paymentMethod: 'Cash',
+      transactionRef: '',
+      notes: '',
+    })
+    setRefPaymentModalOpen(true)
+  }
+
+  async function handleRefPaymentSubmit(e) {
+    e.preventDefault()
+    if (!refPaymentBooking) return
+    setRefPaymentSubmitting(true)
+    try {
+      const amtPaise = Math.round(Number(refPaymentForm.amount) * 100)
+      if (!amtPaise || amtPaise <= 0) {
+        alert('Please enter a valid payment amount greater than zero.')
+        setRefPaymentSubmitting(false)
+        return
+      }
+      await apiRequest(`/admin/referrals/${refPaymentBooking._id}/payment`, {
+        method: 'POST',
+        authType: 'admin',
+        body: JSON.stringify({
+          amountPaise: amtPaise,
+          paymentMethod: refPaymentForm.paymentMethod,
+          transactionReference: refPaymentForm.transactionRef.trim(),
+          notes: refPaymentForm.notes.trim(),
+        }),
+      })
+      setActionNotice(`Payment of ${formatInr(amtPaise)} recorded successfully.`)
+      setRefPaymentModalOpen(false)
+      setRefPaymentBooking(null)
+      loadReferralsData()
+      if (selectedReferralDetail) handleOpenReferralDetail(selectedReferralDetail.booking?._id || refPaymentBooking._id)
+    } catch (err) {
+      alert(`Error recording payment: ${err.message}`)
+    } finally {
+      setRefPaymentSubmitting(false)
+    }
+  }
+
+  function handleOpenRefRefundModal(booking) {
+    setRefRefundBooking(booking)
+    const paidAmount = Math.max(0, (booking.financials?.patientPaidPaise || 0) / 100)
+    setRefRefundForm({
+      refundAmount: paidAmount > 0 ? paidAmount.toString() : '',
+      reason: 'PATIENT_REQUEST',
+      notes: '',
+      reference: '',
+    })
+    setRefRefundModalOpen(true)
+  }
+
+  async function handleRefRefundSubmit(e) {
+    e.preventDefault()
+    if (!refRefundBooking) return
+    setRefRefundSubmitting(true)
+    try {
+      const amtPaise = Math.round(Number(refRefundForm.refundAmount) * 100)
+      if (!amtPaise || amtPaise <= 0) {
+        alert('Please enter a valid refund amount.')
+        setRefRefundSubmitting(false)
+        return
+      }
+      if (!refRefundForm.reason.trim()) {
+        alert('Justification/reason is mandatory for issuing refunds.')
+        setRefRefundSubmitting(false)
+        return
+      }
+      await apiRequest(`/admin/referrals/${refRefundBooking._id}/refund`, {
+        method: 'POST',
+        authType: 'admin',
+        body: JSON.stringify({
+          refundAmountPaise: amtPaise,
+          amountPaise: amtPaise,
+          amount: Number(refRefundForm.refundAmount),
+          reason: refRefundForm.reason.trim(),
+          justification: refRefundForm.reason.trim(),
+          notes: refRefundForm.notes.trim(),
+          reference: refRefundForm.reference.trim(),
+          transactionReference: refRefundForm.reference.trim(),
+        }),
+      })
+      setActionNotice(`Refund of ${formatInr(amtPaise)} processed and recorded in ledger.`)
+      setRefRefundModalOpen(false)
+      setRefRefundBooking(null)
+      loadReferralsData()
+      if (selectedReferralDetail) handleOpenReferralDetail(selectedReferralDetail.booking?._id || refRefundBooking._id)
+    } catch (err) {
+      alert(`Error processing refund: ${err.message}`)
+    } finally {
+      setRefRefundSubmitting(false)
+    }
+  }
+
+  function handleOpenRefServiceModal(booking) {
+    setRefServiceBooking(booking)
+    setRefServiceForm({
+      amount: '',
+      category: 'CLINICAL_SPECIMEN_COLLECTION',
+      agreementRef: '',
+      legalJustification: '',
+      paymentReference: '',
+      notes: '',
+    })
+    setRefServiceModalOpen(true)
+  }
+
+  async function handleRefServiceSubmit(e) {
+    e.preventDefault()
+    if (!refServiceBooking) return
+    setRefServiceSubmitting(true)
+    try {
+      const amtPaise = Math.round(Number(refServiceForm.amount) * 100)
+      if (!amtPaise || amtPaise <= 0) {
+        alert('Please enter a valid amount.')
+        setRefServiceSubmitting(false)
+        return
+      }
+      if (!refServiceForm.legalJustification.trim()) {
+        alert('Legal justification and regulatory compliance documentation are strictly required.')
+        setRefServiceSubmitting(false)
+        return
+      }
+      await apiRequest(`/admin/referrals/${refServiceBooking._id}/service-payment`, {
+        method: 'POST',
+        authType: 'admin',
+        body: JSON.stringify({
+          amountPaise: amtPaise,
+          category: refServiceForm.category,
+          agreementRef: refServiceForm.agreementRef.trim(),
+          legalJustification: refServiceForm.legalJustification.trim(),
+          paymentReference: refServiceForm.paymentReference.trim(),
+          notes: refServiceForm.notes.trim(),
+        }),
+      })
+      setActionNotice(`Authorized clinical service payment of ${formatInr(amtPaise)} logged.`)
+      setRefServiceModalOpen(false)
+      setRefServiceBooking(null)
+      loadReferralsData()
+      if (selectedReferralDetail) handleOpenReferralDetail(selectedReferralDetail.booking?._id || refServiceBooking._id)
+    } catch (err) {
+      alert(`Error recording clinical service payment: ${err.message}`)
+    } finally {
+      setRefServiceSubmitting(false)
+    }
+  }
+
+  function handleOpenRefSettlementModal(booking) {
+    setRefSettlementBooking(booking)
+    setRefSettlementForm({
+      settlementStatus: booking.settlementStatus || 'SETTLED',
+      notes: booking.settlementNotes || '',
+    })
+    setRefSettlementModalOpen(true)
+  }
+
+  async function handleRefSettlementSubmit(e) {
+    e.preventDefault()
+    if (!refSettlementBooking) return
+    setRefSettlementSubmitting(true)
+    try {
+      await apiRequest(`/admin/referrals/${refSettlementBooking._id}/settlement`, {
+        method: 'PATCH',
+        authType: 'admin',
+        body: JSON.stringify({
+          settlementStatus: refSettlementForm.settlementStatus,
+          notes: refSettlementForm.notes.trim(),
+        }),
+      })
+      setActionNotice(`Settlement status updated to ${refSettlementForm.settlementStatus}`)
+      setRefSettlementModalOpen(false)
+      setRefSettlementBooking(null)
+      loadReferralsData()
+      if (selectedReferralDetail) handleOpenReferralDetail(selectedReferralDetail.booking?._id || refSettlementBooking._id)
+    } catch (err) {
+      alert(`Error updating settlement: ${err.message}`)
+    } finally {
+      setRefSettlementSubmitting(false)
+    }
+  }
+
+  function handleExportReferralsCSV() {
+    if (!referrals.length) {
+      alert('No referral records available to export.')
+      return
+    }
+    const headers = [
+      'Booking ID',
+      'Date & Time',
+      'Doctor Name',
+      'Doctor ID',
+      'Doctor Code',
+      'Patient Name',
+      'Patient Mobile',
+      'Prescribed Items',
+      'Original MRP (₹)',
+      'Doctor Discount (₹)',
+      'Discount %',
+      'Patient Bill (₹)',
+      'Collected Paid (₹)',
+      'Outstanding (₹)',
+      'Refunds (₹)',
+      'Lab Net Receipts (₹)',
+      'Authorized Service Payment (₹)',
+      'Lab Retained Net (₹)',
+      'Booking Status',
+      'Payment Status',
+      'Settlement Status',
+    ]
+
+    const rows = referrals.map((r) => {
+      const items = (r.items || []).map((i) => (i.itemType || 'test') + ': ' + (i.name || i.test?.name || i.package?.name || 'Item')).join('; ')
+      const f = r.financials || {}
+      const docName = r.doctor?.name || (r.doctorName && r.doctorName !== 'Direct / Walk-in' && r.doctorName !== 'Unassigned Doctor' ? r.doctorName : '')
+      const doctorStr = docName ? `Dr. ${docName.replace(/^Dr\.?\s*/i, '')}` : 'Direct / Walk-in'
+      const docId = r.doctor?._id || r.doctorId || ''
+      const docCode = r.doctor?.referralCode || r.referralCode || ''
+      const patientName = r.patient?.name || r.patientName || 'Unknown Patient'
+      const patientMobile = r.patient?.mobile || r.phone || ''
+      return [
+        `"${r.bookingReference || r.reference || r._id}"`,
+        `"${new Date(r.createdAt || r.date).toLocaleString()}"`,
+        `"${doctorStr}"`,
+        `"${docId}"`,
+        `"${docCode}"`,
+        `"${patientName}"`,
+        `"${patientMobile}"`,
+        `"${items.replace(/"/g, '""')}"`,
+        ((f.originalMrpPaise || 0) / 100).toFixed(2),
+        ((f.doctorDiscountPaise || 0) / 100).toFixed(2),
+        (f.discountPercent || 0) + '%',
+        ((f.patientPayablePaise || 0) / 100).toFixed(2),
+        ((f.patientPaidPaise || 0) / 100).toFixed(2),
+        ((f.patientOutstandingPaise || 0) / 100).toFixed(2),
+        ((f.patientRefundedPaise || 0) / 100).toFixed(2),
+        ((f.labNetReceiptsPaise || 0) / 100).toFixed(2),
+        ((f.authorizedServicePaymentPaise || 0) / 100).toFixed(2),
+        ((f.labNetRetainedPaise || 0) / 100).toFixed(2),
+        `"${r.status || ''}"`,
+        `"${r.paymentStatus || ''}"`,
+        `"${r.settlementStatus || 'PENDING'}"`,
+      ]
+    })
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n')
+    const encodedUri = encodeURI(csvContent)
+    const link = document.createElement('a')
+    link.setAttribute('href', encodedUri)
+    link.setAttribute('download', `UniquePathology_Doctor_Referrals_Ledger_${new Date().toISOString().slice(0, 10)}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  function handleExportStatementsCSV() {
+    if (!doctorStatements.length) {
+      alert('No statement data to export.')
+      return
+    }
+    const headers = [
+      'Doctor Name',
+      'Doctor ID',
+      'Specialization',
+      'Clinic Name',
+      'Mobile',
+      'Tariff Discount %',
+      'Patients Referred',
+      'Total MRP (₹)',
+      'Discounts Granted (₹)',
+      'Patient Billing (₹)',
+      'Collected Receipts (₹)',
+      'Outstanding (₹)',
+      'Refunds (₹)',
+      'Lab Net Receipts (₹)',
+      'Authorized Service Payments (₹)',
+      'Unique Pathology Net Retained (₹)',
+      'Settled Count',
+      'Pending Count',
+    ]
+
+    const rows = doctorStatements.map((d) => {
+      const doc = d.doctor || {}
+      const f = d.financials || {}
+      return [
+        `"${doc.name || ''}"`,
+        `"${doc._id || ''}"`,
+        `"${doc.specialization || ''}"`,
+        `"${doc.clinicName || ''}"`,
+        `"${doc.mobile || ''}"`,
+        (doc.discountPercent || 0) + '%',
+        d.totalReferrals || 0,
+        ((f.totalMrpPaise || 0) / 100).toFixed(2),
+        ((f.totalDoctorDiscountPaise || 0) / 100).toFixed(2),
+        ((f.totalPatientBillingPaise || 0) / 100).toFixed(2),
+        ((f.totalCollectedPaise || 0) / 100).toFixed(2),
+        ((f.totalOutstandingPaise || 0) / 100).toFixed(2),
+        ((f.totalRefundsPaise || 0) / 100).toFixed(2),
+        ((f.totalLabNetReceiptsPaise || 0) / 100).toFixed(2),
+        ((f.totalAuthorizedServicePaymentsPaise || 0) / 100).toFixed(2),
+        ((f.totalLabNetRetainedPaise || 0) / 100).toFixed(2),
+        d.settlementCounts?.SETTLED || 0,
+        d.settlementCounts?.PENDING || 0,
+      ]
+    })
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n')
+    const encodedUri = encodeURI(csvContent)
+    const link = document.createElement('a')
+    link.setAttribute('href', encodedUri)
+    link.setAttribute('download', `UniquePathology_Doctor_Statements_${new Date().toISOString().slice(0, 10)}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  // Admin Patient Booking Creation Modal State (Part 2 & 3)
+  const initialAdminBookingForm = {
+    patientName: '',
+    phone: '',
+    email: '',
+    age: '',
+    gender: 'prefer_not_to_say',
+    collectionType: 'centre',
+    address: '',
+    landmark: '',
+    city: 'Mandideep',
+    pinCode: '462046',
+    date: new Date().toISOString().slice(0, 10),
+    timeSlot: '07:00 AM - 09:00 AM',
+    doctorId: 'walkin', // 'walkin' | 'self' | doctor._id
+    selectedTestIds: [],
+    selectedPackageIds: [],
+    paymentStatus: 'pending',
+    paymentMethod: 'Cash',
+    amountPaid: '',
+    adminNotes: '',
+  }
+
+  const [adminBookingModalOpen, setAdminBookingModalOpen] = useState(false)
+  const [adminBookingSubmitting, setAdminBookingSubmitting] = useState(false)
+  const [adminBookingError, setAdminBookingError] = useState('')
+  const [adminBookingSuccess, setAdminBookingSuccess] = useState('')
+  const [adminBookingForm, setAdminBookingForm] = useState(initialAdminBookingForm)
+
+  function handleOpenAdminBookingModal() {
+    setAdminBookingForm({
+      ...initialAdminBookingForm,
+      date: new Date().toISOString().slice(0, 10),
+    })
+    setAdminBookingError('')
+    setAdminBookingSuccess('')
+    setAdminBookingModalOpen(true)
+  }
+
+  async function handleSubmitAdminBooking(e) {
+    if (e) e.preventDefault()
+    setAdminBookingError('')
+    setAdminBookingSuccess('')
+
+    if (!adminBookingForm.patientName || adminBookingForm.patientName.trim().length < 2) {
+      setAdminBookingError('Patient name is required (minimum 2 characters).')
+      return
+    }
+
+    if (!/^[6-9][0-9]{9}$/.test(adminBookingForm.phone.trim())) {
+      setAdminBookingError('Please enter a valid 10-digit Indian mobile number.')
+      return
+    }
+
+    if (adminBookingForm.selectedTestIds.length === 0 && adminBookingForm.selectedPackageIds.length === 0) {
+      setAdminBookingError('Please select at least one pathology test or health package.')
+      return
+    }
+
+    const items = [
+      ...adminBookingForm.selectedTestIds.map((id) => {
+        const t = tests.find((x) => x._id === id)
+        return { itemType: 'test', id, name: t?.name }
+      }),
+      ...adminBookingForm.selectedPackageIds.map((id) => {
+        const p = packages.find((x) => x._id === id)
+        return { itemType: 'package', id, name: p?.name }
+      }),
+    ]
+
+    const selectedDoc = doctors.find((d) => String(d._id) === String(adminBookingForm.doctorId))
+    const docName = selectedDoc
+      ? selectedDoc.name
+      : adminBookingForm.doctorId === 'self'
+      ? 'Self Referred'
+      : 'Walk-In Patient'
+
+    const payload = {
+      patientName: adminBookingForm.patientName.trim(),
+      phone: adminBookingForm.phone.trim(),
+      email: adminBookingForm.email.trim() || undefined,
+      age: adminBookingForm.age ? Number(adminBookingForm.age) : undefined,
+      gender: adminBookingForm.gender,
+      collectionType: adminBookingForm.collectionType,
+      address: adminBookingForm.address.trim() || undefined,
+      landmark: adminBookingForm.landmark.trim() || undefined,
+      city: adminBookingForm.city.trim() || 'Mandideep',
+      pinCode: adminBookingForm.pinCode.trim() || '462046',
+      date: adminBookingForm.date,
+      timeSlot: adminBookingForm.timeSlot,
+      doctorId: adminBookingForm.doctorId,
+      doctorName: docName,
+      items,
+      paymentStatus: adminBookingForm.paymentStatus,
+      paymentMethod: adminBookingForm.paymentMethod,
+      amountPaid: adminBookingForm.amountPaid ? Number(adminBookingForm.amountPaid) : undefined,
+      adminNotes: adminBookingForm.adminNotes.trim() || undefined,
+    }
+
+    setAdminBookingSubmitting(true)
+    try {
+      const res = await apiRequest('/admin/bookings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        authType: 'admin',
+      })
+      setAdminBookingSuccess(`Booking ${res.booking?.reference || ''} created successfully and linked to ${docName}!`)
+      await Promise.allSettled([
+        loadAllDashboardData(),
+        loadReferralsData(),
+        loadDoctorStatementsData(),
+      ])
+      setTimeout(() => {
+        setAdminBookingModalOpen(false)
+        setAdminBookingSuccess('')
+      }, 1500)
+    } catch (err) {
+      setAdminBookingError(err.message || 'Failed to create patient booking.')
+    } finally {
+      setAdminBookingSubmitting(false)
+    }
+  }
+
+  function handleOpenPrintModal(type = 'referrals', payload = null) {
+    setPrintReportType(type)
+    setPrintReportPayload(payload)
+    setRefPrintModalOpen(true)
+  }
+
+  function handleTriggerPrint() {
+    const originalTitle = document.title
+    let filename = 'Doctor_Ledger_Report'
+
+    if (printReportType === 'doctor-statement') {
+      const activeDoc = printReportPayload?.doctor || (statementDoctorFilter !== 'all' ? doctors.find(d => String(d._id) === String(statementDoctorFilter)) : null) || (doctors[0] || null)
+      const rawName = activeDoc?.name || 'Dr_Chitra_Verma'
+      const cleanName = rawName.startsWith('Dr') ? rawName : `Dr_${rawName}`
+      const sanitizedDoc = cleanName.replace(/[^a-zA-Z0-9]/g, '_')
+      const monthYear = new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' }).replace(/\s+/g, '_')
+      filename = `Doctor_Ledger_${sanitizedDoc}_${monthYear}`
+    } else {
+      const monthYear = new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' }).replace(/\s+/g, '_')
+      filename = `Doctor_Ledger_Referrals_${monthYear}`
+    }
+
+    document.title = filename
+    window.print()
+    setTimeout(() => {
+      document.title = originalTitle
+    }, 1500)
+  }
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -859,6 +1511,7 @@ export function AdminDashboardPage() {
             {[
               { id: 'overview', label: 'Overview Metrics', icon: BarChart3 },
               { id: 'doctors', label: `Doctors (${doctors.length})`, icon: Stethoscope },
+              { id: 'doctorReferrals', label: 'Doctor Referrals & Accounts', icon: Receipt },
               { id: 'offers', label: `Offers & Campaigns (${offers.length})`, icon: Tag },
               { id: 'bookings', label: `Bookings (${bookings.length})`, icon: CalendarCheck },
               { id: 'patients', label: `Patients (${patients.length})`, icon: Users },
@@ -2056,6 +2709,14 @@ export function AdminDashboardPage() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenAdminBookingModal}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#073b66] px-4 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition shadow-xs"
+                >
+                  <Plus size={15} />
+                  <span>Create Patient Booking</span>
+                </button>
                 <span className="text-xs font-bold text-cyan-900 bg-cyan-50 border border-cyan-200 px-3 py-1 rounded-full">
                   {bookings.filter((b) => b.doctorName || b.doctorId).length} Doctor Referred
                 </span>
@@ -3227,6 +3888,956 @@ export function AdminDashboardPage() {
         )}
         */
       }
+      
+        {/* ========================================================= */}
+        {/* TAB: DOCTOR REFERRALS & FINANCIAL LEDGER                   */}
+        {/* ========================================================= */}
+        {activeTab === 'doctorReferrals' && (
+          <div className="space-y-6 animate-in fade-in">
+            {/* Top Header Card */}
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <span className="p-2.5 rounded-2xl bg-gradient-to-br from-cyan-600 to-[#073b66] text-white shadow-md shadow-cyan-900/10">
+                      <Receipt size={22} />
+                    </span>
+                    <div>
+                      <h2 className="text-xl font-black text-[#073b66]">Doctor Referrals & Financial Accounts</h2>
+                      <p className="text-xs text-slate-500">
+                        Auditable financial ledger, doctor-specific tariff reconciliation, verified collections, and lawful clinical service accounting.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sub-view switcher & Action Buttons */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setReferralSubView('ledger')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                        referralSubView === 'ledger'
+                          ? 'bg-white text-[#073b66] shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Referral Ledger
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReferralSubView('statements')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                        referralSubView === 'statements'
+                          ? 'bg-white text-[#073b66] shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Doctor Financial Statements
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenAdminBookingModal}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-teal-800 px-3.5 py-2 text-xs font-bold text-white hover:bg-teal-700 transition shadow-xs"
+                    title="Create New Patient Referral Booking"
+                  >
+                    <Plus size={15} />
+                    <span>New Referral Booking</span>
+                  </button>
+
+                  {referralSubView === 'ledger' ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleExportReferralsCSV}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition shadow-xs"
+                        title="Export Referrals to CSV"
+                      >
+                        <FileSpreadsheet size={15} className="text-emerald-600" />
+                        <span>Export CSV</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenPrintModal('referrals')}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 transition shadow-xs"
+                      >
+                        <Printer size={15} />
+                        <span>Print Ledger Report</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleExportStatementsCSV}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition shadow-xs"
+                        title="Export Statements to CSV"
+                      >
+                        <FileSpreadsheet size={15} className="text-emerald-600" />
+                        <span>Export CSV</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenPrintModal('doctor-statement', null)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-slate-800 transition shadow-xs"
+                      >
+                        <Printer size={15} />
+                        <span>Print All Statements</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => (referralSubView === 'ledger' ? loadReferralsData() : loadDoctorStatementsData())}
+                    disabled={referralsLoading || statementsLoading}
+                    className="p-2 text-slate-600 hover:text-cyan-700 rounded-xl hover:bg-slate-100 transition border border-slate-200 bg-white"
+                    title="Refresh Ledger"
+                  >
+                    <RefreshCw size={15} className={referralsLoading || statementsLoading ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Legal & Regulatory Compliance Alert */}
+              <div className="mt-4 rounded-2xl bg-amber-50/70 border border-amber-200/80 p-3.5 text-xs text-amber-900 flex items-start gap-3">
+                <ShieldCheck size={18} className="text-amber-700 mt-0.5 shrink-0" />
+                <div className="leading-relaxed">
+                  <span className="font-bold">Medical Ethics & Statutory Compliance:</span> In compliance with National Medical Commission (NMC) regulations and Indian Medical Ethics, Unique Pathology strictly prohibits commission kickbacks or referral fees. All figures reflect verified patient billing concessions, actual payment collections, transparent refunds, and separately documented clinical service agreements.
+                </div>
+              </div>
+            </div>
+
+            {/* ================= SUB-VIEW 1: REFERRAL LEDGER ================= */}
+            {referralSubView === 'ledger' && (
+              <div className="space-y-6">
+                {/* 9 Financial Ledger Metric Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Referrals</span>
+                    <p className="mt-1 text-2xl font-black text-[#073b66]">{referralsSummary.totalBookings ?? referralsSummary.totalReferralsCount ?? 0}</p>
+                    <span className="text-[11px] text-slate-500">Bookings across doctors</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Original MRP</span>
+                    <p className="mt-1 text-xl font-black text-slate-700">{formatInr(referralsSummary.totalMrpPaise ?? referralsSummary.totalOriginalMrpPaise ?? 0)}</p>
+                    <span className="text-[11px] text-slate-500">Standard catalogue tariff</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-700">Doctor Concessions</span>
+                    <p className="mt-1 text-xl font-black text-amber-900">-{formatInr(referralsSummary.totalDoctorDiscountPaise ?? 0)}</p>
+                    <span className="text-[11px] text-amber-700">Patient discount granted</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-blue-200 bg-blue-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-blue-700">Patient Invoiced</span>
+                    <p className="mt-1 text-xl font-black text-blue-900">{formatInr(referralsSummary.totalPayablePaise ?? referralsSummary.totalPatientPayablePaise ?? 0)}</p>
+                    <span className="text-[11px] text-blue-700">Net payable after discount</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Collected Receipts</span>
+                    <p className="mt-1 text-xl font-black text-emerald-900">{formatInr(referralsSummary.totalPaidPaise ?? referralsSummary.totalPatientPaidPaise ?? 0)}</p>
+                    <span className="text-[11px] text-emerald-700">Verified cash/digital received</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-rose-700">Patient Outstanding</span>
+                    <p className="mt-1 text-xl font-black text-rose-900">{formatInr(referralsSummary.totalOutstandingPaise ?? 0)}</p>
+                    <span className="text-[11px] text-rose-700">Due from patients</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-orange-200 bg-orange-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-orange-700">Refunds Recorded</span>
+                    <p className="mt-1 text-xl font-black text-orange-900">{formatInr(referralsSummary.totalRefundedPaise ?? referralsSummary.totalRefundPaise ?? 0)}</p>
+                    <span className="text-[11px] text-orange-700">Audit-recorded adjustments</span>
+                  </div>
+
+                  <div className="rounded-2xl border border-purple-200 bg-purple-50/40 p-4 shadow-xs">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-purple-700">Clinical Service Costs</span>
+                    <p className="mt-1 text-xl font-black text-purple-900">{formatInr(referralsSummary.totalAuthorizedServicePaymentPaise ?? referralsSummary.totalAuthorizedServicePaise ?? 0)}</p>
+                    <span className="text-[11px] text-purple-700">Legally documented tasks</span>
+                  </div>
+
+                  <div className="col-span-2 rounded-2xl border-2 border-teal-500 bg-gradient-to-br from-teal-900 to-[#073b66] p-4 text-white shadow-md">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-teal-300">Laboratory Net Retained Revenue</span>
+                      <span className="px-2 py-0.5 rounded-full bg-teal-400/20 text-[10px] font-bold text-teal-200">Audited Retained</span>
+                    </div>
+                    <p className="mt-1 text-2xl font-black text-white">{formatInr(referralsSummary.totalLabNetRetainedPaise ?? referralsSummary.totalNetRetainedPaise ?? 0)}</p>
+                    <span className="text-[11px] text-teal-200/90">(Collected Receipts) − (Refunds) − (Lawful Clinical Service Costs)</span>
+                  </div>
+                </div>
+
+                {/* Filters & Search Toolbar */}
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {/* Doctor Filter */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Referring Doctor</label>
+                      <select
+                        value={refDoctorFilter}
+                        onChange={(e) => {
+                          setRefDoctorFilter(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="all">All Referring Doctors</option>
+                        {doctors.map((d) => (
+                          <option key={d._id} value={d._id}>
+                            Dr. {d.name} {d.referralCode ? `(${d.referralCode})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Patient/Doctor Search */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Patient Name or Mobile</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={refSearch}
+                          onChange={(e) => {
+                            setRefSearch(e.target.value)
+                            setRefPage(1)
+                          }}
+                          placeholder="Search patient..."
+                          className="w-full rounded-xl border border-slate-200 bg-white pl-8 pr-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                        <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+                      </div>
+                    </div>
+
+                    {/* Booking ID Filter */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Booking Reference ID</label>
+                      <input
+                        type="text"
+                        value={refBookingId}
+                        onChange={(e) => {
+                          setRefBookingId(e.target.value)
+                          setRefPage(1)
+                        }}
+                        placeholder="e.g. UP-BK-..."
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    {/* Start Date */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">From Date</label>
+                      <input
+                        type="date"
+                        value={refStartDate}
+                        onChange={(e) => {
+                          setRefStartDate(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    {/* End Date */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">To Date</label>
+                      <input
+                        type="date"
+                        value={refEndDate}
+                        onChange={(e) => {
+                          setRefEndDate(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    {/* Test/Package Name */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Test / Package Name</label>
+                      <input
+                        type="text"
+                        value={refTestOrPackage}
+                        onChange={(e) => {
+                          setRefTestOrPackage(e.target.value)
+                          setRefPage(1)
+                        }}
+                        placeholder="Filter by test name..."
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    {/* Booking Status Filter */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Booking Status</label>
+                      <select
+                        value={refStatusFilter}
+                        onChange={(e) => {
+                          setRefStatusFilter(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="all">All Booking Statuses</option>
+                        <option value="CONFIRMED">CONFIRMED</option>
+                        <option value="SAMPLE_COLLECTED">SAMPLE_COLLECTED</option>
+                        <option value="REPORT_UPLOADED">REPORT_UPLOADED</option>
+                        <option value="COMPLETED">COMPLETED</option>
+                        <option value="CANCELLED">CANCELLED</option>
+                      </select>
+                    </div>
+
+                    {/* Payment Status Filter */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Payment Status</label>
+                      <select
+                        value={refPaymentFilter}
+                        onChange={(e) => {
+                          setRefPaymentFilter(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="all">All Payment Statuses</option>
+                        <option value="PENDING">PENDING</option>
+                        <option value="COMPLETED">COMPLETED</option>
+                        <option value="REFUNDED">REFUNDED</option>
+                      </select>
+                    </div>
+
+                    {/* Settlement Status Filter */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Settlement Status</label>
+                      <select
+                        value={refSettlementFilter}
+                        onChange={(e) => {
+                          setRefSettlementFilter(e.target.value)
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="all">All Settlement Statuses</option>
+                        <option value="PENDING">PENDING</option>
+                        <option value="SETTLED">SETTLED</option>
+                        <option value="DISPUTED">DISPUTED</option>
+                      </select>
+                    </div>
+
+                    {/* Reset Filters */}
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefDoctorFilter('all')
+                          setRefSearch('')
+                          setRefBookingId('')
+                          setRefStartDate('')
+                          setRefEndDate('')
+                          setRefTestOrPackage('')
+                          setRefStatusFilter('all')
+                          setRefPaymentFilter('all')
+                          setRefSettlementFilter('all')
+                          setRefPage(1)
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition flex items-center justify-center gap-1.5"
+                      >
+                        <RotateCcw size={13} />
+                        <span>Reset Filters</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Referrals & Ledger Table */}
+                <div className="rounded-3xl border border-slate-200 bg-white shadow-xs overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
+                          <th className="py-3 px-3.5">Booking / Date</th>
+                          <th className="py-3 px-3.5">Referring Doctor</th>
+                          <th className="py-3 px-3.5">Patient Details</th>
+                          <th className="py-3 px-3.5">Tests / Packages</th>
+                          <th className="py-3 px-3.5 text-right">Original MRP</th>
+                          <th className="py-3 px-3.5 text-right">Doctor Discount</th>
+                          <th className="py-3 px-3.5 text-right">Patient Payable</th>
+                          <th className="py-3 px-3.5 text-right">Collected Paid</th>
+                          <th className="py-3 px-3.5 text-right">Due / Outstanding</th>
+                          <th className="py-3 px-3.5 text-right">Lab Net Retained</th>
+                          <th className="py-3 px-3.5 text-center">Statuses</th>
+                          <th className="py-3 px-3.5 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {referralsLoading ? (
+                          <tr>
+                            <td colSpan={12} className="py-12 text-center text-slate-500">
+                              <RefreshCw size={24} className="mx-auto animate-spin text-cyan-600 mb-2" />
+                              <p className="font-bold">Loading referral ledger records...</p>
+                            </td>
+                          </tr>
+                        ) : referrals.length === 0 ? (
+                          <tr>
+                            <td colSpan={12} className="py-12 text-center text-slate-400">
+                              <Receipt size={32} className="mx-auto text-slate-300 mb-2" />
+                              <p className="font-bold text-slate-600">No referral bookings found matching your filters.</p>
+                              <p className="text-[11px] text-slate-400 mt-1">Try adjusting the doctor, date range, or search criteria.</p>
+                            </td>
+                          </tr>
+                        ) : (
+                          referrals.map((r) => {
+                            const f = r.financials || {}
+                            return (
+                              <tr key={r._id} className="hover:bg-slate-50/80 transition group">
+                                {/* Booking & Date */}
+                                <td className="py-3 px-3.5 whitespace-nowrap">
+                                  <div className="font-mono font-bold text-[#073b66]">{r.bookingReference || r.reference || r._id.slice(-6)}</div>
+                                  <div className="text-[10px] text-slate-400">{new Date(r.createdAt || r.date).toLocaleString()}</div>
+                                </td>
+
+                                {/* Referring Doctor */}
+                                <td className="py-3 px-3.5">
+                                  <div className="font-bold text-slate-800">
+                                    {r.doctor?.name || (r.doctorName && r.doctorName !== 'Direct / Walk-in' && r.doctorName !== 'Unassigned Doctor') ? (
+                                      `Dr. ${(r.doctor?.name || r.doctorName).replace(/^Dr\.?\s*/i, '')}`
+                                    ) : (
+                                      <span className="text-slate-400">Direct / Walk-in</span>
+                                    )}
+                                  </div>
+                                  {(r.doctor?.name || (r.doctorName && r.doctorName !== 'Direct / Walk-in' && r.doctorName !== 'Unassigned Doctor')) && (
+                                    <div className="text-[10px] text-slate-500 flex items-center gap-1">
+                                      <span>Code: {r.doctor?.referralCode || r.referralCode || '—'}</span>
+                                      <span>•</span>
+                                      <span>Disc: {r.doctor?.discountPercent ?? r.doctorDiscountPercent ?? 0}%</span>
+                                      {(r.doctor?._id || r.doctorId) && (
+                                        <>
+                                          <span>•</span>
+                                          <span className="font-mono text-[9px] text-slate-400">ID: {String(r.doctor?._id || r.doctorId).slice(-6)}</span>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+
+                                {/* Patient Details */}
+                                <td className="py-3 px-3.5">
+                                  <div className="font-bold text-slate-900">{r.patient?.name || r.patientName || 'Unknown Patient'}</div>
+                                  <div className="text-[10px] text-slate-500">
+                                    {r.patient?.mobile || r.phone || '—'}
+                                    {(r.patient?.gender || r.gender) ? ` • ${r.patient?.gender || r.gender}` : ''}
+                                    {(r.patient?.age || r.age) ? ` (${r.patient?.age || r.age}y)` : ''}
+                                  </div>
+                                </td>
+
+                                {/* Tests & Packages */}
+                                <td className="py-3 px-3.5 max-w-xs">
+                                  <div className="flex flex-wrap gap-1">
+                                    {(r.items || []).map((item, idx) => (
+                                      <span
+                                        key={idx}
+                                        className="inline-block rounded-md bg-slate-100 text-slate-700 px-1.5 py-0.5 text-[10px] font-semibold border border-slate-200"
+                                      >
+                                        {item.name || item.test?.name || item.package?.name || 'Item'}
+                                      </span>
+                                    ))}
+                                    {(!r.items || r.items.length === 0) && (
+                                      <span className="text-[11px] text-slate-400">—</span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                {/* Original MRP */}
+                                <td className="py-3 px-3.5 text-right font-medium text-slate-600 whitespace-nowrap">
+                                  {formatInr(f.originalMrpPaise)}
+                                </td>
+
+                                {/* Doctor Discount */}
+                                <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                                  <div className="font-bold text-amber-700">
+                                    -{formatInr(f.doctorDiscountPaise)}
+                                  </div>
+                                  <div className="text-[10px] text-amber-600 font-semibold">
+                                    ({f.discountPercent || 0}%)
+                                  </div>
+                                </td>
+
+                                {/* Final Patient Payable */}
+                                <td className="py-3 px-3.5 text-right font-bold text-blue-900 whitespace-nowrap">
+                                  {formatInr(f.patientPayablePaise)}
+                                </td>
+
+                                {/* Collected Paid */}
+                                <td className="py-3 px-3.5 text-right font-black text-emerald-700 whitespace-nowrap">
+                                  {formatInr(f.patientPaidPaise)}
+                                </td>
+
+                                {/* Outstanding */}
+                                <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                                  {f.patientOutstandingPaise > 0 ? (
+                                    <span className="font-bold text-rose-700">{formatInr(f.patientOutstandingPaise)}</span>
+                                  ) : (
+                                    <span className="text-emerald-600 font-semibold">₹0.00</span>
+                                  )}
+                                </td>
+
+                                {/* Lab Net Retained */}
+                                <td className="py-3 px-3.5 text-right whitespace-nowrap font-black text-teal-800 bg-teal-50/50">
+                                  {formatInr(f.labNetRetainedPaise)}
+                                  {f.patientRefundedPaise > 0 && (
+                                    <div className="text-[9px] text-orange-600 font-normal">
+                                      Refund: -{formatInr(f.patientRefundedPaise)}
+                                    </div>
+                                  )}
+                                  {f.authorizedServicePaymentPaise > 0 && (
+                                    <div className="text-[9px] text-purple-600 font-normal">
+                                      Clin Svc: -{formatInr(f.authorizedServicePaymentPaise)}
+                                    </div>
+                                  )}
+                                </td>
+
+                                {/* Statuses */}
+                                <td className="py-3 px-3.5 whitespace-nowrap text-center">
+                                  <div className="flex flex-col gap-1 items-center">
+                                    {/* Booking Status Badge */}
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-wider border ${
+                                        r.status === 'COMPLETED'
+                                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                          : r.status === 'CANCELLED'
+                                          ? 'bg-red-50 text-red-700 border-red-200'
+                                          : 'bg-blue-50 text-blue-700 border-blue-200'
+                                      }`}
+                                    >
+                                      {r.status}
+                                    </span>
+
+                                    {/* Payment Status Badge */}
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider border ${
+                                        r.paymentStatus === 'COMPLETED'
+                                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                          : r.paymentStatus === 'REFUNDED'
+                                          ? 'bg-orange-100 text-orange-800 border-orange-300'
+                                          : 'bg-amber-100 text-amber-800 border-amber-300'
+                                      }`}
+                                    >
+                                      {r.paymentStatus}
+                                    </span>
+
+                                    {/* Settlement Status */}
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider border ${
+                                        r.settlementStatus === 'SETTLED'
+                                          ? 'bg-teal-50 text-teal-700 border-teal-200'
+                                          : r.settlementStatus === 'DISPUTED'
+                                          ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                          : 'bg-slate-100 text-slate-600 border-slate-200'
+                                      }`}
+                                    >
+                                      {r.settlementStatus || 'PENDING'}
+                                    </span>
+                                  </div>
+                                </td>
+
+                                {/* Action Buttons */}
+                                <td className="py-3 px-3.5 whitespace-nowrap text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenReferralDetail(r._id)}
+                                      className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:text-cyan-700 hover:bg-slate-100 transition shadow-xs"
+                                      title="View Detailed Ledger & Audit Trail"
+                                    >
+                                      <Eye size={13} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRefPaymentModal(r)}
+                                      className="p-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 transition shadow-xs"
+                                      title="Record Verified Patient Payment"
+                                    >
+                                      <DollarSign size={13} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRefRefundModal(r)}
+                                      className="p-1.5 rounded-lg border border-orange-200 text-orange-700 hover:bg-orange-50 transition shadow-xs"
+                                      title="Record Refund with Audit Justification"
+                                    >
+                                      <RotateCcw size={13} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRefServiceModal(r)}
+                                      className="p-1.5 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 transition shadow-xs"
+                                      title="Record Authorized Clinical Service Work"
+                                    >
+                                      <Stethoscope size={13} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRefSettlementModal(r)}
+                                      className="p-1.5 rounded-lg border border-teal-200 text-teal-700 hover:bg-teal-50 transition shadow-xs"
+                                      title="Update Settlement Status"
+                                    >
+                                      <CheckCircle2 size={13} />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenPrintModal('referrals', r)}
+                                      className="p-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 transition shadow-xs"
+                                      title="Print Patient Statement"
+                                    >
+                                      <Printer size={13} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination Bar */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-3 gap-3">
+                    <div className="text-xs text-slate-500">
+                      Showing{' '}
+                      <span className="font-bold text-slate-800">
+                        {referrals.length > 0 ? (referralsPagination.page - 1) * referralsPagination.limit + 1 : 0}
+                      </span>{' '}
+                      to{' '}
+                      <span className="font-bold text-slate-800">
+                        {Math.min(referralsPagination.page * referralsPagination.limit, referralsPagination.total)}
+                      </span>{' '}
+                      of <span className="font-bold text-slate-800">{referralsPagination.total}</span> referral bookings
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setRefPage(Math.max(1, refPage - 1))}
+                        disabled={refPage <= 1 || referralsLoading}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 transition shadow-xs"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-xs font-bold text-slate-600 px-2">
+                        Page {referralsPagination.page} of {referralsPagination.pages || 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setRefPage(Math.min(referralsPagination.pages, refPage + 1))}
+                        disabled={refPage >= referralsPagination.pages || referralsLoading}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-40 transition shadow-xs"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ================= SUB-VIEW 2: DOCTOR STATEMENTS ================= */}
+            {referralSubView === 'statements' && (
+              <div className="space-y-6">
+                {/* Statement Date Range and Doctor Filter Bar */}
+                <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 items-end">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Select Doctor</label>
+                      <select
+                        value={statementDoctorFilter}
+                        onChange={(e) => setStatementDoctorFilter(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="">All Doctors (Consolidated)</option>
+                        {doctors.map((d) => (
+                          <option key={d._id} value={d._id}>
+                            Dr. {d.name} ({d.referralCode || 'No Code'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Statement From Date</label>
+                      <input
+                        type="date"
+                        value={statementStartDate}
+                        onChange={(e) => setStatementStartDate(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1">Statement To Date</label>
+                      <input
+                        type="date"
+                        value={statementEndDate}
+                        onChange={(e) => setStatementEndDate(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+
+                    <div>
+                      <button
+                        type="button"
+                        onClick={loadDoctorStatementsData}
+                        disabled={statementsLoading}
+                        className="w-full rounded-xl bg-cyan-700 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition flex items-center justify-center gap-1.5 shadow-sm"
+                      >
+                        <RefreshCw size={14} className={statementsLoading ? 'animate-spin' : ''} />
+                        <span>Filter Statements</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Overall Summary Cards (if statementsSummary available) */}
+                {statementsSummary && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Doctors</span>
+                      <p className="mt-1 text-xl font-black text-[#073b66]">{statementsSummary.totalDoctors || 0}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Patients Referred</span>
+                      <p className="mt-1 text-xl font-black text-slate-700">{statementsSummary.totalReferrals || 0}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total MRP</span>
+                      <p className="mt-1 text-base font-black text-slate-700">{formatInr(statementsSummary.totalMrpPaise)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-amber-700">Discounts</span>
+                      <p className="mt-1 text-base font-black text-amber-900">-{formatInr(statementsSummary.totalDoctorDiscountPaise)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Collected Receipts</span>
+                      <p className="mt-1 text-base font-black text-emerald-900">{formatInr(statementsSummary.totalCollectedPaise)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50/50 p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-rose-700">Outstanding</span>
+                      <p className="mt-1 text-base font-black text-rose-900">{formatInr(statementsSummary.totalOutstandingPaise)}</p>
+                    </div>
+                    <div className="rounded-2xl border-2 border-teal-500 bg-teal-900 text-white p-3.5 shadow-xs">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-teal-300">Net Retained</span>
+                      <p className="mt-1 text-base font-black text-white">{formatInr(statementsSummary.totalLabNetRetainedPaise)}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Statements Table */}
+                <div className="rounded-3xl border border-slate-200 bg-white shadow-xs overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
+                          <th className="py-3 px-3.5">Doctor & Practice</th>
+                          <th className="py-3 px-3.5 text-center">Tariff Discount</th>
+                          <th className="py-3 px-3.5 text-center">Referred Patients</th>
+                          <th className="py-3 px-3.5 text-right">Total MRP</th>
+                          <th className="py-3 px-3.5 text-right">Discounts Granted</th>
+                          <th className="py-3 px-3.5 text-right">Patient Billing</th>
+                          <th className="py-3 px-3.5 text-right">Collected Paid</th>
+                          <th className="py-3 px-3.5 text-right">Outstanding</th>
+                          <th className="py-3 px-3.5 text-right">Refunds</th>
+                          <th className="py-3 px-3.5 text-right">Clinical Services</th>
+                          <th className="py-3 px-3.5 text-right">Lab Net Retained</th>
+                          <th className="py-3 px-3.5 text-center">Settlements</th>
+                          <th className="py-3 px-3.5 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {statementsLoading ? (
+                          <tr>
+                            <td colSpan={13} className="py-12 text-center text-slate-500">
+                              <RefreshCw size={24} className="mx-auto animate-spin text-cyan-600 mb-2" />
+                              <p className="font-bold">Generating doctor financial statements...</p>
+                            </td>
+                          </tr>
+                        ) : doctorStatements.length === 0 ? (
+                          <tr>
+                            <td colSpan={13} className="py-12 text-center text-slate-400">
+                              <Stethoscope size={32} className="mx-auto text-slate-300 mb-2" />
+                              <p className="font-bold text-slate-600">No doctor referral records found for the selected period.</p>
+                            </td>
+                          </tr>
+                        ) : (
+                          doctorStatements.map((d) => {
+                            const doc = d.doctor || {}
+                            const f = d.financials || {}
+                            return (
+                              <tr key={doc._id} className="hover:bg-slate-50/80 transition">
+                                <td className="py-3 px-3.5">
+                                  <div className="font-black text-[#073b66]">Dr. {doc.name}</div>
+                                  <div className="text-[10px] text-slate-500">
+                                    {doc.specialization} • {doc.qualification || 'MBBS'}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    {doc.clinicName} {doc.mobile ? `(${doc.mobile})` : ''}
+                                  </div>
+                                </td>
+
+                                <td className="py-3 px-3.5 text-center">
+                                  <span className="inline-block rounded-md bg-amber-50 text-amber-700 px-2 py-0.5 text-xs font-bold border border-amber-200">
+                                    {doc.discountPercent || 0}%
+                                  </span>
+                                </td>
+
+                                <td className="py-3 px-3.5 text-center font-bold text-slate-800">
+                                  {d.totalReferrals || 0}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-medium text-slate-600">
+                                  {formatInr(f.totalMrpPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-bold text-amber-700">
+                                  -{formatInr(f.totalDoctorDiscountPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-bold text-blue-900">
+                                  {formatInr(f.totalPatientBillingPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-black text-emerald-700">
+                                  {formatInr(f.totalCollectedPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-bold text-rose-700">
+                                  {formatInr(f.totalOutstandingPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right text-orange-700">
+                                  {formatInr(f.totalRefundsPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right text-purple-700 font-medium">
+                                  {formatInr(f.totalAuthorizedServicePaymentsPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-right font-black text-teal-800 bg-teal-50/50">
+                                  {formatInr(f.totalLabNetRetainedPaise)}
+                                </td>
+
+                                <td className="py-3 px-3.5 text-center">
+                                  <div className="flex items-center justify-center gap-1.5 text-[10px]">
+                                    <span className="rounded bg-teal-100 text-teal-800 px-1.5 py-0.5 font-bold" title="Settled Bookings">
+                                      {d.settlementCounts?.SETTLED || 0} S
+                                    </span>
+                                    <span className="rounded bg-amber-100 text-amber-800 px-1.5 py-0.5 font-bold" title="Pending Bookings">
+                                      {d.settlementCounts?.PENDING || 0} P
+                                    </span>
+                                  </div>
+                                </td>
+
+                                <td className="py-3 px-3.5 text-center whitespace-nowrap">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedStatementDrilldown(d)}
+                                      className="p-1.5 rounded-lg border border-slate-200 text-slate-700 hover:text-cyan-700 hover:bg-slate-100 transition shadow-xs"
+                                      title="View Detailed Statement Drilldown"
+                                    >
+                                      <Eye size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenPrintModal('doctor-statement', d)}
+                                      className="p-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 transition shadow-xs"
+                                      title="Print Doctor Statement"
+                                    >
+                                      <Printer size={13} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Doctor Statement Drilldown Card (if selected) */}
+                {selectedStatementDrilldown && (
+                  <div className="rounded-3xl border border-cyan-200 bg-cyan-50/20 p-6 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-cyan-800">Doctor Statement Drilldown</span>
+                        <h3 className="text-lg font-black text-[#073b66]">
+                          Dr. {selectedStatementDrilldown.doctor?.name} ({selectedStatementDrilldown.doctor?.referralCode || 'No Code'})
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          {selectedStatementDrilldown.doctor?.specialization} • {selectedStatementDrilldown.doctor?.clinicName}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPrintModal('doctor-statement', selectedStatementDrilldown)}
+                          className="rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 transition flex items-center gap-1"
+                        >
+                          <Printer size={14} />
+                          <span>Print Statement</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedStatementDrilldown(null)}
+                          className="p-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                      <div className="rounded-xl bg-white p-3 border border-slate-200">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">Total Referred</span>
+                        <span className="text-base font-black text-slate-800">{selectedStatementDrilldown.totalReferrals} Patients</span>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 border border-slate-200">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">Total Concessions</span>
+                        <span className="text-base font-black text-amber-700">
+                          -{formatInr(selectedStatementDrilldown.financials?.totalDoctorDiscountPaise)}
+                        </span>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 border border-slate-200">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">Collected Receipts</span>
+                        <span className="text-base font-black text-emerald-700">
+                          {formatInr(selectedStatementDrilldown.financials?.totalCollectedPaise)}
+                        </span>
+                      </div>
+                      <div className="rounded-xl bg-white p-3 border border-slate-200">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">Lab Net Retained</span>
+                        <span className="text-base font-black text-teal-800">
+                          {formatInr(selectedStatementDrilldown.financials?.totalLabNetRetainedPaise)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
       </main>
 
       {/* MODAL: CREATE / EDIT TEST */}
@@ -4662,6 +6273,1418 @@ export function AdminDashboardPage() {
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 1: RECORD VERIFIED PATIENT PAYMENT                                  */}
+      {/* ========================================================================= */}
+      {refPaymentModalOpen && refPaymentBooking && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setRefPaymentModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-lg space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-[#073b66]">Record Patient Payment</h3>
+                <p className="text-xs text-slate-500">
+                  Booking #{refPaymentBooking.bookingReference || refPaymentBooking._id} • {refPaymentBooking.patient?.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRefPaymentModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Financial Status Summary */}
+            <div className="grid grid-cols-3 gap-2.5 rounded-2xl bg-slate-50 p-3.5 border border-slate-200 text-center">
+              <div>
+                <span className="block text-[10px] font-bold uppercase text-slate-400">Total Invoiced</span>
+                <span className="text-sm font-black text-slate-800">
+                  {formatInr(refPaymentBooking.financials?.patientPayablePaise || refPaymentBooking.totalAmountPaise)}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold uppercase text-emerald-600">Already Paid</span>
+                <span className="text-sm font-black text-emerald-700">
+                  {formatInr(refPaymentBooking.financials?.patientPaidPaise || 0)}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold uppercase text-rose-600">Due Outstanding</span>
+                <span className="text-sm font-black text-rose-700">
+                  {formatInr(refPaymentBooking.financials?.patientOutstandingPaise || 0)}
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleRefPaymentSubmit} className="space-y-4">
+              <div>
+                <label className="field-label">Payment Amount (₹) <span className="text-red-500">*</span></label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={refPaymentForm.amount}
+                  onChange={(e) => setRefPaymentForm({ ...refPaymentForm, amount: e.target.value })}
+                  placeholder="Enter amount in ₹..."
+                  className="field"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Payment Method <span className="text-red-500">*</span></label>
+                  <select
+                    value={refPaymentForm.paymentMethod}
+                    onChange={(e) => setRefPaymentForm({ ...refPaymentForm, paymentMethod: e.target.value })}
+                    className="field"
+                  >
+                    <option value="Cash">Cash at Counter</option>
+                    <option value="UPI">UPI / QR Code</option>
+                    <option value="Card">Debit / Credit Card</option>
+                    <option value="NetBanking">Net Banking / NEFT</option>
+                    <option value="Cheque">Cheque</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="field-label">Transaction Reference / Receipt No.</label>
+                  <input
+                    type="text"
+                    value={refPaymentForm.transactionRef}
+                    onChange={(e) => setRefPaymentForm({ ...refPaymentForm, transactionRef: e.target.value })}
+                    placeholder="e.g. UPI-987654321 / REC-102"
+                    className="field"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="field-label">Accounting Notes</label>
+                <input
+                  type="text"
+                  value={refPaymentForm.notes}
+                  onChange={(e) => setRefPaymentForm({ ...refPaymentForm, notes: e.target.value })}
+                  placeholder="e.g. Received full settlement at sample collection desk"
+                  className="field"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRefPaymentModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={refPaymentSubmitting}
+                  className="rounded-xl bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition shadow-sm disabled:opacity-50"
+                >
+                  {refPaymentSubmitting ? 'Recording Payment...' : 'Confirm & Record Payment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 2: PROCESS & RECORD PATIENT REFUND                                 */}
+      {/* ========================================================================= */}
+      {refRefundModalOpen && refRefundBooking && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setRefRefundModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-lg space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-rose-900">Record Patient Refund</h3>
+                <p className="text-xs text-slate-500">
+                  Booking #{refRefundBooking.bookingReference || refRefundBooking._id} • {refRefundBooking.patient?.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRefRefundModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 leading-relaxed">
+              <span className="font-bold block mb-0.5">Auditing & Compliance Policy:</span>
+              Refunds do NOT delete historical transaction records. An immutable refund entry will be posted to the financial ledger and Unique Pathology revenue will be adjusted accordingly.
+            </div>
+
+            {/* Paid vs Max Refundable */}
+            <div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-3 border border-slate-200 text-center">
+              <div>
+                <span className="block text-[10px] font-bold uppercase text-slate-400">Total Amount Paid</span>
+                <span className="text-base font-black text-emerald-700">
+                  {formatInr(refRefundBooking.financials?.patientPaidPaise || 0)}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[10px] font-bold uppercase text-rose-600">Already Refunded</span>
+                <span className="text-base font-black text-rose-700">
+                  {formatInr(refRefundBooking.financials?.patientRefundedPaise || 0)}
+                </span>
+              </div>
+            </div>
+
+            <form onSubmit={handleRefRefundSubmit} className="space-y-4">
+              <div>
+                <label className="field-label">Refund Amount (₹) <span className="text-red-500">*</span></label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={refRefundForm.refundAmount}
+                  onChange={(e) => setRefRefundForm({ ...refRefundForm, refundAmount: e.target.value })}
+                  placeholder="Enter refund amount..."
+                  className="field"
+                />
+              </div>
+
+              <div>
+                <label className="field-label">Mandatory Justification / Reason <span className="text-red-500">*</span></label>
+                <select
+                  value={refRefundForm.reason}
+                  onChange={(e) => setRefRefundForm({ ...refRefundForm, reason: e.target.value })}
+                  className="field"
+                >
+                  <option value="PATIENT_REQUEST">Patient Cancellation Request</option>
+                  <option value="TEST_CANCELLED">Diagnostic Test Not Available / Cancelled</option>
+                  <option value="SAMPLE_UNVIABLE">Sample Rejected / Inadequate Specimen</option>
+                  <option value="BILLING_CORRECTION">Billing Tariff Overcharge Correction</option>
+                  <option value="DISCOUNT_DISPUTE_SETTLEMENT">Authorized Doctor Tariff Concession Adjustment</option>
+                  <option value="OTHER_DOCUMENTED_REASON">Other Documented Clinical Reason</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="field-label">Disbursement / Bank Reference ID</label>
+                <input
+                  type="text"
+                  value={refRefundForm.reference}
+                  onChange={(e) => setRefRefundForm({ ...refRefundForm, reference: e.target.value })}
+                  placeholder="e.g. REF-UPI-987654 / IMPS-345678"
+                  className="field"
+                />
+              </div>
+
+              <div>
+                <label className="field-label">Detailed Administrative & Audit Notes</label>
+                <textarea
+                  rows={2}
+                  value={refRefundForm.notes}
+                  onChange={(e) => setRefRefundForm({ ...refRefundForm, notes: e.target.value })}
+                  placeholder="Enter documented reason approved by lab director..."
+                  className="field text-xs"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRefRefundModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={refRefundSubmitting}
+                  className="rounded-xl bg-rose-600 px-5 py-2 text-xs font-bold text-white hover:bg-rose-700 transition shadow-sm disabled:opacity-50"
+                >
+                  {refRefundSubmitting ? 'Posting Refund...' : 'Post Audited Refund'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 3: RECORD AUTHORIZED CLINICAL SERVICE PAYMENT                      */}
+      {/* ========================================================================= */}
+      {refServiceModalOpen && refServiceBooking && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setRefServiceModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-purple-950">Record Authorized Clinical Service</h3>
+                <p className="text-xs text-slate-500">
+                  Doctor: Dr. {refServiceBooking.doctor?.name} • Booking #{refServiceBooking.bookingReference || refServiceBooking._id}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRefServiceModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Statutory Compliance Notice */}
+            <div className="rounded-2xl bg-purple-50 border border-purple-200 p-3.5 text-xs text-purple-950 leading-relaxed">
+              <span className="font-bold flex items-center gap-1.5 mb-1 text-purple-900">
+                <ShieldCheck size={16} /> Statutory Ethics Warning (NMC / MCI Compliance)
+              </span>
+              Under Indian Medical Ethics Regulations, referral fees or kickbacks are strictly illegal. This form is strictly restricted to logging bona-fide, independently documented and legally permissible clinical service costs (e.g. clinical specimen collection center facility, specialist specimen centrifugation) backed by a formal SLA.
+            </div>
+
+            <form onSubmit={handleRefServiceSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Service Payment Amount (₹) <span className="text-red-500">*</span></label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    value={refServiceForm.amount}
+                    onChange={(e) => setRefServiceForm({ ...refServiceForm, amount: e.target.value })}
+                    placeholder="Enter amount in ₹..."
+                    className="field"
+                  />
+                </div>
+
+                <div>
+                  <label className="field-label">Clinical Task Category <span className="text-red-500">*</span></label>
+                  <select
+                    value={refServiceForm.category}
+                    onChange={(e) => setRefServiceForm({ ...refServiceForm, category: e.target.value })}
+                    className="field"
+                  >
+                    <option value="CLINICAL_SPECIMEN_COLLECTION">Clinical Specimen Collection Facility</option>
+                    <option value="SPECIALIST_SAMPLE_PREPARATION">Specialist Specimen Centrifugation / Prep</option>
+                    <option value="POST_DIAGNOSTIC_CONSULTATION">Formal Post-Diagnostic Consultation</option>
+                    <option value="EQUIPMENT_FACILITY_PROVISION">Equipment & Cold-Chain Maintenance</option>
+                    <option value="OTHER_DOCUMENTED_CLINICAL_SERVICE">Other Permissible Documented Service</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="field-label">Agreement Reference / SLA Contract ID <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  value={refServiceForm.agreementRef}
+                  onChange={(e) => setRefServiceForm({ ...refServiceForm, agreementRef: e.target.value })}
+                  placeholder="e.g. SLA-COLLECTION-2026/04"
+                  className="field"
+                />
+              </div>
+
+              <div>
+                <label className="field-label">Legal Justification & Detailed Clinical Work Description <span className="text-red-500">*</span></label>
+                <textarea
+                  rows={2}
+                  required
+                  value={refServiceForm.legalJustification}
+                  onChange={(e) => setRefServiceForm({ ...refServiceForm, legalJustification: e.target.value })}
+                  placeholder="Describe the clinical service performed and verification protocol..."
+                  className="field text-xs font-mono"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="field-label">Disbursement / Payment Reference</label>
+                  <input
+                    type="text"
+                    value={refServiceForm.paymentReference}
+                    onChange={(e) => setRefServiceForm({ ...refServiceForm, paymentReference: e.target.value })}
+                    placeholder="e.g. BANK-TXN-778899"
+                    className="field"
+                  />
+                </div>
+
+                <div>
+                  <label className="field-label">Accounting Notes</label>
+                  <input
+                    type="text"
+                    value={refServiceForm.notes}
+                    onChange={(e) => setRefServiceForm({ ...refServiceForm, notes: e.target.value })}
+                    placeholder="e.g. Approved per quarterly collection agreement"
+                    className="field"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRefServiceModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={refServiceSubmitting}
+                  className="rounded-xl bg-purple-700 px-5 py-2 text-xs font-bold text-white hover:bg-purple-800 transition shadow-sm disabled:opacity-50"
+                >
+                  {refServiceSubmitting ? 'Logging Service Task...' : 'Log Authorized Clinical Service'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 4: SETTLEMENT STATUS UPDATE                                         */}
+      {/* ========================================================================= */}
+      {refSettlementModalOpen && refSettlementBooking && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setRefSettlementModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-md space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-[#073b66]">Update Settlement Status</h3>
+                <p className="text-xs text-slate-500">
+                  Booking #{refSettlementBooking.bookingReference || refSettlementBooking._id}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRefSettlementModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleRefSettlementSubmit} className="space-y-4">
+              <div>
+                <label className="field-label">Settlement Status</label>
+                <select
+                  value={refSettlementForm.settlementStatus}
+                  onChange={(e) => setRefSettlementForm({ ...refSettlementForm, settlementStatus: e.target.value })}
+                  className="field font-bold"
+                >
+                  <option value="PENDING">PENDING — Reconciliation Pending</option>
+                  <option value="SETTLED">SETTLED — Fully Reconciled & Closed</option>
+                  <option value="DISPUTED">DISPUTED — Under Audit Review</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="field-label">Settlement Notes / Remarks</label>
+                <textarea
+                  rows={3}
+                  value={refSettlementForm.notes}
+                  onChange={(e) => setRefSettlementForm({ ...refSettlementForm, notes: e.target.value })}
+                  placeholder="Enter audit reconciliation notes..."
+                  className="field text-xs"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setRefSettlementModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={refSettlementSubmitting}
+                  className="rounded-xl bg-[#073b66] px-5 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition shadow-sm disabled:opacity-50"
+                >
+                  {refSettlementSubmitting ? 'Updating...' : 'Update Settlement Status'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 5: DETAILED REFERRAL LEDGER & AUDIT TRAIL MODAL                    */}
+      {/* ========================================================================= */}
+      {referralDetailModalOpen && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setReferralDetailModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-3xl space-y-6 max-h-[90vh] overflow-y-auto">
+            {referralDetailLoading || !selectedReferralDetail ? (
+              <div className="py-12 text-center text-slate-500">
+                <RefreshCw size={24} className="mx-auto animate-spin text-cyan-600 mb-2" />
+                <p className="font-bold">Loading comprehensive ledger record...</p>
+              </div>
+            ) : (
+              (() => {
+                const b = selectedReferralDetail.booking || {}
+                const f = selectedReferralDetail.financials || {}
+                const ledgers = selectedReferralDetail.ledgerEntries || []
+                const audits = selectedReferralDetail.auditLogs || []
+
+                return (
+                  <div className="space-y-6">
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-bold bg-cyan-50 text-cyan-800 border border-cyan-200 px-2 py-0.5 rounded">
+                            {b.bookingReference || b.reference || b._id}
+                          </span>
+                          <span className="text-xs text-slate-400">
+                            Booked: {new Date(b.createdAt || b.date).toLocaleString()}
+                          </span>
+                        </div>
+                        <h3 className="text-xl font-black text-[#073b66] mt-1">
+                          Referral Financial Statement: {b.patient?.name || b.patientName || 'Patient'}
+                        </h3>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPrintModal('referrals', b)}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 shadow-xs"
+                        >
+                          <Printer size={14} />
+                          <span>Print Statement</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReferralDetailModalOpen(false)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Patient & Doctor Card */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-1.5">
+                        <span className="font-black text-[#073b66] uppercase text-[10px] tracking-wider block">
+                          Patient Information
+                        </span>
+                        <div className="font-bold text-slate-900 text-sm">{b.patient?.name || b.patientName || 'Unknown Patient'}</div>
+                        <div className="text-slate-600">Mobile: {b.patient?.mobile || b.phone || '—'}</div>
+                        <div className="text-slate-600">
+                          Age / Gender: {(b.patient?.age || b.age) ? `${b.patient?.age || b.age} yrs` : 'Age N/A'} {(b.patient?.gender || b.gender) ? `• ${b.patient?.gender || b.gender}` : ''}
+                        </div>
+                        <div className="text-slate-600">Email: {b.patient?.email || b.email || '—'}</div>
+                        <div className="text-slate-500 text-[11px]">{b.patient?.address || b.address || 'Mandideep, Bhopal (MP)'}</div>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-1.5">
+                        <span className="font-black text-[#073b66] uppercase text-[10px] tracking-wider block">
+                          Referring Doctor & Tariff
+                        </span>
+                        <div className="font-bold text-slate-900 text-sm">
+                          {(b.doctor?.name || b.doctorName) && (b.doctor?.name !== 'Direct / Walk-in' && b.doctorName !== 'Direct / Walk-in' && b.doctorName !== 'Unassigned Doctor')
+                            ? `Dr. ${(b.doctor?.name || b.doctorName).replace(/^Dr\.?\s*/i, '')}`
+                            : 'Direct Laboratory Patient'}
+                        </div>
+                        {((b.doctor?.name || b.doctorName) && (b.doctor?.name !== 'Direct / Walk-in' && b.doctorName !== 'Direct / Walk-in' && b.doctorName !== 'Unassigned Doctor')) && (
+                          <>
+                            <div className="text-slate-600">
+                              {b.doctor?.specialization || b.doctorSpecialization || 'Clinical Specialist'} {b.doctor?.clinicName || b.doctorClinic ? `• ${b.doctor?.clinicName || b.doctorClinic}` : ''}
+                            </div>
+                            <div className="text-slate-600">
+                              Referral Code: <span className="font-mono font-bold text-cyan-800">{b.doctor?.referralCode || b.referralCode || '—'}</span>
+                              {(b.doctor?._id || b.doctorId) && (
+                                <span className="ml-2 font-mono text-[10px] text-slate-400">ID: {String(b.doctor?._id || b.doctorId).slice(-6)}</span>
+                              )}
+                            </div>
+                            <div className="text-amber-700 font-bold">
+                              Doctor-Specific Concession: {b.doctor?.discountPercent ?? b.doctorDiscountPercent ?? 0}%
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Prescribed Tests Table with Snapshot Pricing */}
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-2">
+                        Prescribed Diagnostic Tests & Tariff Snapshots
+                      </h4>
+                      <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-[10px]">
+                            <tr>
+                              <th className="py-2.5 px-3">Item / Investigation</th>
+                              <th className="py-2.5 px-3">Type</th>
+                              <th className="py-2.5 px-3 text-right">Original MRP</th>
+                              <th className="py-2.5 px-3 text-right">Concession</th>
+                              <th className="py-2.5 px-3 text-right">Patient Charge</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(b.items || []).map((it, idx) => (
+                              <tr key={idx}>
+                                <td className="py-2.5 px-3 font-semibold text-slate-800">
+                                  {it.name || it.test?.name || it.package?.name || 'Diagnostic Item'}
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-500 uppercase text-[10px]">
+                                  {it.itemType}
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-slate-600">
+                                  {formatInr(it.mrpPaise || it.pricePaise)}
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-amber-700 font-semibold">
+                                  -{formatInr(it.discountPaise || 0)}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-bold text-blue-900">
+                                  {formatInr(it.finalPricePaise || it.pricePaise)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Financial Reconciliation Summary Box */}
+                    <div className="rounded-2xl border border-teal-200 bg-teal-50/40 p-4 space-y-3">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-teal-900">
+                        Audited Financial Reconciliation
+                      </h4>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div>
+                          <span className="text-slate-500 block text-[10px]">Total Original MRP</span>
+                          <span className="font-bold text-slate-800 text-sm">{formatInr(f.originalMrpPaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-amber-700 block text-[10px]">Doctor Concession</span>
+                          <span className="font-bold text-amber-800 text-sm">-{formatInr(f.doctorDiscountPaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-blue-700 block text-[10px]">Patient Bill</span>
+                          <span className="font-bold text-blue-900 text-sm">{formatInr(f.patientPayablePaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-emerald-700 block text-[10px]">Collected Paid</span>
+                          <span className="font-black text-emerald-800 text-sm">{formatInr(f.patientPaidPaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-rose-700 block text-[10px]">Outstanding Due</span>
+                          <span className="font-bold text-rose-800 text-sm">{formatInr(f.patientOutstandingPaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-orange-700 block text-[10px]">Refunded</span>
+                          <span className="font-bold text-orange-800 text-sm">{formatInr(f.patientRefundedPaise)}</span>
+                        </div>
+                        <div>
+                          <span className="text-purple-700 block text-[10px]">Clinical Service</span>
+                          <span className="font-bold text-purple-800 text-sm">{formatInr(f.authorizedServicePaymentPaise)}</span>
+                        </div>
+                        <div className="bg-teal-900 text-white rounded-xl p-2 text-center">
+                          <span className="text-teal-300 block text-[10px] font-bold uppercase">Lab Net Retained</span>
+                          <span className="font-black text-base">{formatInr(f.labNetRetainedPaise)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Immutable Financial Ledger Entries */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-xs font-black uppercase tracking-wider text-slate-500">
+                          Immutable Financial Ledger History ({ledgers.length} entries)
+                        </h4>
+                        <span className="text-[10px] text-slate-400 font-mono">Double-entry verified</span>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left text-xs font-mono">
+                          <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-[10px]">
+                            <tr>
+                              <th className="py-2.5 px-3">Timestamp</th>
+                              <th className="py-2.5 px-3">Entry Type</th>
+                              <th className="py-2.5 px-3">Method / Ref</th>
+                              <th className="py-2.5 px-3 text-right">Amount</th>
+                              <th className="py-2.5 px-3">Direction</th>
+                              <th className="py-2.5 px-3">Actor / Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-[11px]">
+                            {ledgers.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="py-4 text-center text-slate-400">
+                                  No financial ledger entries posted yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              ledgers.map((l) => (
+                                <tr key={l._id}>
+                                  <td className="py-2 px-3 text-slate-500">{new Date(l.createdAt).toLocaleString()}</td>
+                                  <td className="py-2 px-3 font-bold text-slate-800">{l.entryType}</td>
+                                  <td className="py-2 px-3 text-slate-600">
+                                    {l.paymentMethod} {l.transactionReference ? `(${l.transactionReference})` : ''}
+                                  </td>
+                                  <td className="py-2 px-3 text-right font-black text-slate-900">
+                                    {formatInr(l.amountPaise)}
+                                  </td>
+                                  <td className="py-2 px-3">
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                        l.direction === 'CREDIT' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                      }`}
+                                    >
+                                      {l.direction}
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-3 text-slate-600">
+                                    <div>{l.performedBy}</div>
+                                    {l.notes && <div className="text-[10px] text-slate-400 italic">{l.notes}</div>}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Audit Logs */}
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-2">
+                        Regulatory Audit Trail ({audits.length} events)
+                      </h4>
+                      <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                        <table className="w-full text-left text-xs font-mono">
+                          <thead className="bg-slate-100 text-slate-600 font-bold uppercase text-[10px]">
+                            <tr>
+                              <th className="py-2 px-3">Date</th>
+                              <th className="py-2 px-3">Action</th>
+                              <th className="py-2 px-3">Category</th>
+                              <th className="py-2 px-3">Actor</th>
+                              <th className="py-2 px-3">IP</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-[11px]">
+                            {audits.length === 0 ? (
+                              <tr>
+                                <td colSpan={5} className="py-3 text-center text-slate-400">
+                                  No audit events recorded for this booking.
+                                </td>
+                              </tr>
+                            ) : (
+                              audits.map((a) => (
+                                <tr key={a._id}>
+                                  <td className="py-1.5 px-3 text-slate-500">{new Date(a.createdAt).toLocaleString()}</td>
+                                  <td className="py-1.5 px-3 font-semibold text-slate-800">{a.action}</td>
+                                  <td className="py-1.5 px-3 text-slate-600">{a.category}</td>
+                                  <td className="py-1.5 px-3 text-cyan-800">{a.performedBy}</td>
+                                  <td className="py-1.5 px-3 text-slate-400">{a.ip || '127.0.0.1'}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 6: DOCTOR MONTHLY BILLING STATEMENT / BROWSER PRINT & PDF EXPORT     */}
+      {/* ========================================================================= */}
+      {refPrintModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/80 backdrop-blur-sm p-4 sm:p-6 flex items-center justify-center">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 sm:p-8 shadow-2xl space-y-6 max-h-[95vh] overflow-y-auto">
+            {/* Top Toolbar (Hidden during print) */}
+            <div className="flex items-center justify-between border-b border-slate-200 pb-4 print:hidden">
+              <div className="flex items-center gap-2">
+                <Printer size={20} className="text-[#073b66]" />
+                <h3 className="text-base font-black text-[#073b66]">
+                  Doctor Monthly Billing Statement & PDF Export Preview
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleTriggerPrint}
+                  className="rounded-xl bg-[#073b66] px-4 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition flex items-center gap-1.5 shadow-sm"
+                >
+                  <Printer size={15} />
+                  <span>Print Document / Save PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRefPrintModalOpen(false)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Document Body */}
+            {(() => {
+              // Resolve Doctor Information (NEVER show MongoDB ObjectIDs!)
+              let targetDoc = null
+              if (printReportType === 'doctor-statement') {
+                targetDoc = printReportPayload?.doctor || (statementDoctorFilter !== 'all' ? doctors.find(d => String(d._id) === String(statementDoctorFilter)) : null) || (doctors[0] || null)
+              } else if (printReportPayload?.doctor) {
+                targetDoc = printReportPayload.doctor
+              } else if (refDoctorFilter !== 'all') {
+                targetDoc = doctors.find(d => String(d._id) === String(refDoctorFilter))
+              }
+
+              const docName = targetDoc?.name
+                ? (targetDoc.name.startsWith('Dr') ? targetDoc.name : `Dr. ${targetDoc.name}`)
+                : (printReportPayload?.doctorName && printReportPayload.doctorName !== 'Direct / Walk-in' && printReportPayload.doctorName !== 'Unassigned Doctor')
+                ? (printReportPayload.doctorName.startsWith('Dr') ? printReportPayload.doctorName : `Dr. ${printReportPayload.doctorName}`)
+                : 'Dr. Chitra Verma'
+
+              const docCode = targetDoc?.referralCode || targetDoc?.code || 'DOC-001'
+              const docMobile = targetDoc?.mobile || '9826012345'
+              const docDiscount = targetDoc?.discountPercent !== undefined ? targetDoc.discountPercent : 15
+
+              const periodText = (statementStartDate && statementEndDate)
+                ? `${statementStartDate} to ${statementEndDate}`
+                : (statementStartDate)
+                ? `From ${statementStartDate}`
+                : (statementEndDate)
+                ? `Until ${statementEndDate}`
+                : (refStartDate && refEndDate)
+                ? `${refStartDate} to ${refEndDate}`
+                : 'Selected Date Range'
+
+              // Resolve itemized bookings rows
+              let rawRows = []
+              if (printReportType === 'doctor-statement') {
+                if (printReportPayload?.bookings && printReportPayload.bookings.length > 0) {
+                  rawRows = printReportPayload.bookings
+                } else if (targetDoc?._id) {
+                  rawRows = referrals.filter(r => String(r.doctorId) === String(targetDoc._id) || (r.doctorName && targetDoc.name && r.doctorName.toLowerCase().includes(targetDoc.name.toLowerCase())))
+                } else {
+                  rawRows = referrals
+                }
+              } else {
+                if (printReportPayload) {
+                  rawRows = [printReportPayload]
+                } else {
+                  rawRows = referrals
+                }
+              }
+
+              const calculatedRows = rawRows.map((r) => {
+                const mrp = Math.round(Number(r.mrpPaise || r.financials?.originalMrpPaise || r.originalMrpPaise || 0) / 100)
+                const disc = Math.round(Number(r.discPaise || r.financials?.doctorDiscountPaise || r.discountAmountPaise || 0) / 100)
+                const bill = Math.max(0, mrp - disc)
+                const paid = Math.round(Number(r.paidPaise || r.financials?.patientPaidPaise || r.amountPaidPaise || 0) / 100)
+                const due = Math.max(0, bill - paid)
+                return {
+                  ...r,
+                  calcMrp: mrp,
+                  calcDisc: disc,
+                  calcBill: bill,
+                  calcPaid: paid,
+                  calcDue: due,
+                }
+              })
+
+              const totalMrp = calculatedRows.reduce((sum, r) => sum + r.calcMrp, 0)
+              const totalDisc = calculatedRows.reduce((sum, r) => sum + r.calcDisc, 0)
+              const totalBill = Math.max(0, totalMrp - totalDisc)
+              const totalPaid = calculatedRows.reduce((sum, r) => sum + r.calcPaid, 0)
+              const totalDue = Math.max(0, totalBill - totalPaid)
+
+              return (
+                <div id="printable-financial-document" className="text-slate-900 space-y-6 print:p-0">
+                  {/* Header Branding */}
+                  <div className="border-b-2 border-[#073b66] pb-3 flex items-center justify-between">
+                    <div>
+                      <h1 className="text-2xl font-black text-[#073b66] tracking-tight">UNIQUE PATHOLOGY</h1>
+                      <p className="text-xs text-slate-600 font-semibold">
+                        Advanced Clinical Diagnostic Laboratory & Research Center
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Industrial Area, Mandideep, Bhopal (MP) • Phone: +91 98260 00000 • Email: info@uniquepathology.com
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="inline-block bg-slate-100 text-[#073b66] font-mono font-bold text-xs px-3 py-1 rounded-lg border border-slate-200">
+                        OFFICIAL STATEMENT
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-1">Generated: {new Date().toLocaleDateString('en-IN')}</p>
+                    </div>
+                  </div>
+
+                  {/* PART 4: DOCTOR MONTHLY BILLING STATEMENT HEADER */}
+                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200">
+                    <h2 className="text-lg font-black text-[#073b66] tracking-tight border-b border-slate-200 pb-2">
+                      DOCTOR MONTHLY BILLING STATEMENT
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-3 text-xs">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">Doctor Name</span>
+                        <strong className="text-sm text-slate-900 block mt-0.5">{docName}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">Doctor Code</span>
+                        <strong className="text-sm font-mono text-cyan-800 block mt-0.5">{docCode}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">Doctor Mobile</span>
+                        <strong className="text-sm text-slate-900 block mt-0.5">{docMobile}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">Doctor Discount</span>
+                        <strong className="text-sm text-amber-700 block mt-0.5">{docDiscount}%</strong>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-500 block">Period</span>
+                        <strong className="text-sm text-slate-900 block mt-0.5">{periodText}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* PART 5: SIMPLIFIED LEDGER TABLE (7 COLUMNS) */}
+                  <div className="rounded-xl border border-slate-300 overflow-hidden text-xs">
+                    <table className="w-full text-left print-table">
+                      <thead className="bg-slate-100 border-b border-slate-300 font-bold uppercase text-[10px] text-slate-700">
+                        <tr>
+                          <th className="py-2.5 px-3">DATE</th>
+                          <th className="py-2.5 px-3">PATIENT NAME</th>
+                          <th className="py-2.5 px-3 text-right">MRP (₹)</th>
+                          <th className="py-2.5 px-3 text-right">DISC (₹)</th>
+                          <th className="py-2.5 px-3 text-right">BILL (₹)</th>
+                          <th className="py-2.5 px-3 text-right">PAID (₹)</th>
+                          <th className="py-2.5 px-3 text-right">DUE (₹)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {calculatedRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="py-6 text-center text-slate-500 italic">
+                              No referred patient records found for the selected period.
+                            </td>
+                          </tr>
+                        ) : (
+                          calculatedRows.map((r, idx) => (
+                            <tr key={r._id || idx} className="hover:bg-slate-50/50">
+                              <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
+                                {r.date || (r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : 'N/A')}
+                              </td>
+                              <td className="py-2.5 px-3 font-semibold text-slate-900">
+                                {r.patientName || r.patient?.name || 'Walk-In Patient'}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-medium text-slate-800">
+                                ₹{r.calcMrp.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-medium text-amber-700">
+                                ₹{r.calcDisc.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-bold text-blue-900">
+                                ₹{r.calcBill.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-bold text-emerald-800">
+                                ₹{r.calcPaid.toLocaleString('en-IN')}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-bold text-rose-700">
+                                ₹{r.calcDue.toLocaleString('en-IN')}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+
+                      {/* PART 6: TOTAL ROW */}
+                      <tfoot className="print-totals-row bg-slate-100 border-t-2 border-slate-300">
+                        <tr>
+                          <td colSpan={2} className="py-2.5 px-3 font-black text-slate-900 uppercase text-xs">
+                            TOTAL
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-slate-900 text-xs">
+                            ₹{totalMrp.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-amber-700 text-xs">
+                            ₹{totalDisc.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-blue-900 text-xs">
+                            ₹{totalBill.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-emerald-800 text-xs">
+                            ₹{totalPaid.toLocaleString('en-IN')}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-black text-rose-700 text-xs">
+                            ₹{totalDue.toLocaleString('en-IN')}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+
+                  {/* PART 6: SUMMARY TOTAL BOXES */}
+                  <div className="grid grid-cols-5 gap-2 text-center text-xs print:grid">
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">TOTAL MRP</span>
+                      <strong className="text-sm font-black text-slate-800 block mt-0.5">₹{totalMrp.toLocaleString('en-IN')}</strong>
+                    </div>
+                    <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-amber-800 block">TOTAL DISC</span>
+                      <strong className="text-sm font-black text-amber-800 block mt-0.5">₹{totalDisc.toLocaleString('en-IN')}</strong>
+                    </div>
+                    <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-blue-800 block">TOTAL BILL</span>
+                      <strong className="text-sm font-black text-blue-900 block mt-0.5">₹{totalBill.toLocaleString('en-IN')}</strong>
+                    </div>
+                    <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-emerald-800 block">TOTAL PAID</span>
+                      <strong className="text-sm font-black text-emerald-900 block mt-0.5">₹{totalPaid.toLocaleString('en-IN')}</strong>
+                    </div>
+                    <div className="bg-rose-50/70 border border-rose-200 rounded-xl p-2.5">
+                      <span className="text-[10px] font-bold uppercase text-rose-800 block">TOTAL DUE</span>
+                      <strong className="text-sm font-black text-rose-900 block mt-0.5">₹{totalDue.toLocaleString('en-IN')}</strong>
+                    </div>
+                  </div>
+
+                  {/* Sign-off & Statutory Notes */}
+                  <div className="pt-4 border-t border-slate-200 text-xs flex flex-col sm:flex-row justify-between items-end gap-6">
+                    <div className="text-[11px] text-slate-500 max-w-md">
+                      <span className="font-bold block text-slate-700">Audit Certification & Statutory Compliance</span>
+                      This statement is an official accounting ledger generated by Unique Pathology Diagnostic System.
+                      Doctor discounts applied are authorized clinical concessions passed directly to the patient.
+                    </div>
+                    <div className="text-center sm:text-right">
+                      <div className="h-12 border-b border-slate-400 w-44 mb-1"></div>
+                      <span className="text-xs font-bold text-slate-800 block">Authorized Signatory</span>
+                      <span className="text-[10px] text-slate-500">Finance & Accounts, Unique Pathology</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 7: ADMIN PATIENT BOOKING CREATION FORM (PARTS 2 & 3)                 */}
+      {/* ========================================================================= */}
+      {adminBookingModalOpen && (
+        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setAdminBookingModalOpen(false)}>
+          <div className="modal-panel p-6 sm:p-8 max-w-3xl space-y-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-lg font-black text-[#073b66]">
+                  Create Patient Booking & Doctor Referral
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Book patient tests, link referring doctor for authoritative discounts, and record payments.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdminBookingModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {adminBookingError && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">
+                {adminBookingError}
+              </div>
+            )}
+
+            {adminBookingSuccess && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">
+                {adminBookingSuccess}
+              </div>
+            )}
+
+            {(() => {
+              // Real-time calculation of pricing & doctor discount
+              const selectedDoc = doctors.find((d) => String(d._id) === String(adminBookingForm.doctorId))
+              const docDiscountPercent = selectedDoc?.discountPercent || 0
+
+              const selectedTests = tests.filter((t) => adminBookingForm.selectedTestIds.includes(t._id))
+              const selectedPkgs = packages.filter((p) => adminBookingForm.selectedPackageIds.includes(p._id))
+
+              const originalMrpPaise =
+                selectedTests.reduce((sum, t) => sum + (t.mrpPaise || t.pricePaise || 0), 0) +
+                selectedPkgs.reduce((sum, p) => sum + (p.mrpPaise || p.pricePaise || 0), 0)
+
+              const doctorDiscountPaise = Math.round(originalMrpPaise * (docDiscountPercent / 100))
+              const finalPayablePaise = Math.max(0, originalMrpPaise - doctorDiscountPaise)
+
+              const enteredPaidPaise =
+                adminBookingForm.paymentStatus === 'paid'
+                  ? finalPayablePaise
+                  : adminBookingForm.amountPaid
+                  ? Math.round(Number(adminBookingForm.amountPaid) * 100)
+                  : 0
+
+              const balanceDuePaise = Math.max(0, finalPayablePaise - enteredPaidPaise)
+
+              return (
+                <form onSubmit={handleSubmitAdminBooking} className="space-y-5 text-xs">
+                  {/* Row 1: Patient Basic Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">
+                        Patient Name <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={adminBookingForm.patientName}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, patientName: e.target.value })}
+                        placeholder="e.g. Ramesh Kumar"
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">
+                        Mobile Number <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        maxLength={10}
+                        value={adminBookingForm.phone}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, phone: e.target.value.replace(/\D/g, '') })}
+                        placeholder="10-digit mobile"
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Email Address</label>
+                      <input
+                        type="email"
+                        value={adminBookingForm.email}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, email: e.target.value })}
+                        placeholder="patient@example.com (optional)"
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row 2: Age, Gender, Collection Type */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Patient Age</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={120}
+                        value={adminBookingForm.age}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, age: e.target.value })}
+                        placeholder="e.g. 45"
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Gender</label>
+                      <select
+                        value={adminBookingForm.gender}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, gender: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500 bg-white"
+                      >
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                        <option value="other">Other</option>
+                        <option value="prefer_not_to_say">Prefer not to say</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Sample Collection</label>
+                      <select
+                        value={adminBookingForm.collectionType}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, collectionType: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500 bg-white"
+                      >
+                        <option value="centre">Lab Visit (Mandideep Centre)</option>
+                        <option value="home">Home Sample Collection</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Address if home collection */}
+                  {adminBookingForm.collectionType === 'home' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Home Address</label>
+                        <input
+                          type="text"
+                          value={adminBookingForm.address}
+                          onChange={(e) => setAdminBookingForm({ ...adminBookingForm, address: e.target.value })}
+                          placeholder="House/Street/Locality"
+                          className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="font-bold text-slate-700 block mb-1">Landmark & PIN</label>
+                        <input
+                          type="text"
+                          value={adminBookingForm.landmark}
+                          onChange={(e) => setAdminBookingForm({ ...adminBookingForm, landmark: e.target.value })}
+                          placeholder="Nearby landmark (Mandideep)"
+                          className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Date & Time Slot */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Appointment Date</label>
+                      <input
+                        type="date"
+                        required
+                        value={adminBookingForm.date}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, date: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Time Slot</label>
+                      <select
+                        value={adminBookingForm.timeSlot}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, timeSlot: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2.5 font-medium outline-none focus:border-cyan-500 bg-white"
+                      >
+                        <option value="07:00 AM - 09:00 AM">07:00 AM - 09:00 AM (Fasting)</option>
+                        <option value="09:00 AM - 11:00 AM">09:00 AM - 11:00 AM</option>
+                        <option value="11:00 AM - 01:00 PM">11:00 AM - 01:00 PM</option>
+                        <option value="02:00 PM - 04:00 PM">02:00 PM - 04:00 PM</option>
+                        <option value="04:00 PM - 06:00 PM">04:00 PM - 06:00 PM</option>
+                        <option value="06:00 PM - 08:00 PM">06:00 PM - 08:00 PM</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* PART 3: REFERRING DOCTOR DROPDOWN */}
+                  <div className="rounded-2xl border-2 border-cyan-200 bg-cyan-50/50 p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-black text-[#073b66] uppercase tracking-wide flex items-center gap-1.5">
+                        <Stethoscope size={16} className="text-cyan-700" />
+                        <span>Select Referring Doctor</span>
+                      </label>
+                      {selectedDoc && (
+                        <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                          {selectedDoc.discountPercent}% Concession Applies
+                        </span>
+                      )}
+                    </div>
+
+                    <select
+                      value={adminBookingForm.doctorId}
+                      onChange={(e) => setAdminBookingForm({ ...adminBookingForm, doctorId: e.target.value })}
+                      className="w-full rounded-xl border border-cyan-300 bg-white p-2.5 text-xs font-bold text-slate-800 outline-none focus:border-cyan-600 shadow-xs"
+                    >
+                      <option value="walkin">Walk-In Patient (No Doctor / Direct)</option>
+                      <option value="self">Self Referred</option>
+                      {doctors.map((doc) => (
+                        <option key={doc._id} value={doc._id}>
+                          {doc.name.startsWith('Dr') ? doc.name : `Dr. ${doc.name}`} ({doc.discountPercent || 0}% Concession{doc.referralCode ? ` - ${doc.referralCode}` : ''})
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-slate-500">
+                      When a doctor is selected, the patient's booking is authoritatively linked and the doctor's preset discount will be deducted automatically from MRP.
+                    </p>
+                  </div>
+
+                  {/* Tests & Packages Multi-Selection */}
+                  <div className="space-y-3">
+                    <label className="font-bold text-slate-700 block">
+                      Select Tests & Packages <span className="text-rose-500">*</span>
+                    </label>
+
+                    {/* Pathology Tests Grid */}
+                    <div className="rounded-xl border border-slate-200 p-3 bg-slate-50 space-y-2 max-h-40 overflow-y-auto">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">Tests Catalogue</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {tests.map((t) => {
+                          const checked = adminBookingForm.selectedTestIds.includes(t._id)
+                          return (
+                            <label
+                              key={t._id}
+                              className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition ${
+                                checked
+                                  ? 'bg-cyan-50 border-cyan-300 text-cyan-950 font-bold'
+                                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...adminBookingForm.selectedTestIds, t._id]
+                                      : adminBookingForm.selectedTestIds.filter((id) => id !== t._id)
+                                    setAdminBookingForm({ ...adminBookingForm, selectedTestIds: next })
+                                  }}
+                                  className="rounded text-cyan-600 focus:ring-cyan-500"
+                                />
+                                <span className="line-clamp-1">{t.name}</span>
+                              </div>
+                              <span className="font-bold text-slate-900 ml-2">₹{(t.mrpPaise || t.pricePaise) / 100}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Health Packages Grid */}
+                    <div className="rounded-xl border border-slate-200 p-3 bg-slate-50 space-y-2 max-h-36 overflow-y-auto">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">Health Packages</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {packages.map((pkg) => {
+                          const checked = adminBookingForm.selectedPackageIds.includes(pkg._id)
+                          return (
+                            <label
+                              key={pkg._id}
+                              className={`flex items-center justify-between p-2 rounded-lg border text-xs cursor-pointer transition ${
+                                checked
+                                  ? 'bg-cyan-50 border-cyan-300 text-cyan-950 font-bold'
+                                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...adminBookingForm.selectedPackageIds, pkg._id]
+                                      : adminBookingForm.selectedPackageIds.filter((id) => id !== pkg._id)
+                                    setAdminBookingForm({ ...adminBookingForm, selectedPackageIds: next })
+                                  }}
+                                  className="rounded text-cyan-600 focus:ring-cyan-500"
+                                />
+                                <span className="line-clamp-1">{pkg.name}</span>
+                              </div>
+                              <span className="font-bold text-slate-900 ml-2">₹{(pkg.mrpPaise || pkg.pricePaise) / 100}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Real-time Financial Breakdown Card */}
+                  <div className="rounded-2xl bg-gradient-to-br from-slate-900 to-[#073b66] text-white p-4 space-y-3">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-cyan-300 block">
+                      Tariff & Billing Calculation
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                      <div>
+                        <span className="text-slate-300 block text-[11px]">Original MRP:</span>
+                        <strong className="text-base font-black text-white">{formatInr(originalMrpPaise)}</strong>
+                      </div>
+                      <div>
+                        <span className="text-amber-300 block text-[11px]">Doctor Concession ({docDiscountPercent}%):</span>
+                        <strong className="text-base font-black text-amber-300">-{formatInr(doctorDiscountPaise)}</strong>
+                      </div>
+                      <div>
+                        <span className="text-cyan-300 block text-[11px]">Final Bill:</span>
+                        <strong className="text-base font-black text-cyan-200">{formatInr(finalPayablePaise)}</strong>
+                      </div>
+                      <div>
+                        <span className="text-rose-300 block text-[11px]">Balance Due:</span>
+                        <strong className="text-base font-black text-rose-300">{formatInr(balanceDuePaise)}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Payment Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Payment Status</label>
+                      <select
+                        value={adminBookingForm.paymentStatus}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, paymentStatus: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                      >
+                        <option value="pending">Pending Payment</option>
+                        <option value="paid">Fully Paid</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Payment Method</label>
+                      <select
+                        value={adminBookingForm.paymentMethod}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, paymentMethod: e.target.value })}
+                        className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                      >
+                        <option value="Cash">Cash at Counter</option>
+                        <option value="UPI">UPI / QR Code</option>
+                        <option value="Card">Debit / Credit Card</option>
+                        <option value="Net Banking">Net Banking</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Amount Paid (₹)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={adminBookingForm.paymentStatus === 'paid' ? finalPayablePaise / 100 : adminBookingForm.amountPaid}
+                        onChange={(e) => setAdminBookingForm({ ...adminBookingForm, amountPaid: e.target.value })}
+                        placeholder={adminBookingForm.paymentStatus === 'paid' ? String(finalPayablePaise / 100) : '0'}
+                        disabled={adminBookingForm.paymentStatus === 'paid'}
+                        className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Admin Notes */}
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">Clinical / Administrative Notes</label>
+                    <input
+                      type="text"
+                      value={adminBookingForm.adminNotes}
+                      onChange={(e) => setAdminBookingForm({ ...adminBookingForm, adminNotes: e.target.value })}
+                      placeholder="Doctor prescription reference, special instructions, etc."
+                      className="w-full rounded-xl border border-slate-300 p-2 font-medium bg-white"
+                    />
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200">
+                    <button
+                      type="button"
+                      onClick={() => setAdminBookingModalOpen(false)}
+                      className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={adminBookingSubmitting}
+                      className="rounded-xl bg-[#073b66] px-5 py-2 text-xs font-bold text-white hover:bg-cyan-800 transition disabled:opacity-50 shadow-sm"
+                    >
+                      {adminBookingSubmitting ? 'Creating Booking...' : 'Create Booking & Link Doctor'}
+                    </button>
+                  </div>
+                </form>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

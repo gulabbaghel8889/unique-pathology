@@ -115,21 +115,12 @@ export function Footer({ publicConfig }) {
             </ul>
           </div>
 
-          {/* Col 4: Doctors & Partners */}
+          {/* Col 4: Corporate & Community Services */}
           <div>
             <h4 className="text-xs font-black uppercase tracking-[0.2em] text-cyan-400 mb-4">
-              Doctors & Corporate
+              Corporate & Services
             </h4>
             <ul className="space-y-2.5 text-xs text-slate-400">
-              <li>
-                <Link to="/doctor/login" className="hover:text-cyan-300 transition font-bold text-cyan-300 flex items-center gap-1.5">
-                  <span>Doctor Portal Login</span>
-                  <span className="text-[9px] bg-cyan-900/80 text-cyan-200 px-1.5 py-0.2 rounded border border-cyan-700">New</span>
-                </Link>
-              </li>
-              <li>
-                <Link to="/contact" className="hover:text-cyan-300 transition">Doctor Sample Pickup Enquiry</Link>
-              </li>
               <li>
                 <Link to="/contact" className="hover:text-cyan-300 transition">Corporate & Factory Checkups</Link>
               </li>
@@ -163,7 +154,6 @@ export function Footer({ publicConfig }) {
             <Link to="/privacy" className="hover:text-slate-300 transition">Privacy Policy</Link>
             <Link to="/terms" className="hover:text-slate-300 transition">Terms of Service</Link>
             <Link to="/faqs" className="hover:text-slate-300 transition">Help & FAQs</Link>
-            <Link to="/doctor/login" className="hover:text-cyan-300 transition font-bold text-cyan-400">Doctor Portal</Link>
             <Link to="/admin/login" className="hover:text-slate-300 transition">Admin Portal</Link>
           </div>
         </div>

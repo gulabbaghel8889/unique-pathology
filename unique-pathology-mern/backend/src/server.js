@@ -13,7 +13,6 @@ import { paymentRouter } from './routes/paymentRoutes.js'
 import { reportRouter } from './routes/reportRoutes.js'
 import { enquiryRouter } from './routes/enquiryRoutes.js'
 import { adminRouter } from './routes/adminRoutes.js'
-import { doctorRouter } from './routes/doctorRoutes.js'
 import { offerRouter } from './routes/offerRoutes.js'
 
 export const app = express()
@@ -64,7 +63,6 @@ app.use('/api', paymentRouter)
 app.use('/api', reportRouter)
 app.use('/api', enquiryRouter)
 app.use('/api', adminRouter)
-app.use('/api', doctorRouter)
 app.use('/api', offerRouter)
 
 // 404 fallback for undefined routes

@@ -481,6 +481,7 @@ export function BookingPage() {
           </div>
 
           {/* Doctor Referral (Private B2B Tariff Governance - No discount exposed to public!) */}
+          {/*
           <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:p-5 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-black text-[#073b66] uppercase tracking-wider flex items-center gap-1.5">
@@ -512,6 +513,7 @@ export function BookingPage() {
               </div>
             )}
           </div>
+          */}
 
           {/* SECTION 1.B: PROMOTIONAL CAMPAIGNS & OFFERS */}
           <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/40 p-4 sm:p-5 space-y-3.5">

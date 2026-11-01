@@ -199,23 +199,13 @@ export function ContactPage({ publicConfig }) {
             </button>
             <button
               type="button"
-              onClick={() => setEnquiryType('doctor')}
-              className={`flex-1 py-2.5 rounded-xl transition flex items-center justify-center gap-1.5 ${
-                enquiryType === 'doctor' ? 'bg-white text-[#073b66] shadow-sm font-black' : 'hover:text-slate-900'
-              }`}
-            >
-              <Stethoscope size={14} className="text-cyan-600" />
-              Doctor Tie-Up
-            </button>
-            <button
-              type="button"
               onClick={() => setEnquiryType('corporate')}
               className={`flex-1 py-2.5 rounded-xl transition flex items-center justify-center gap-1.5 ${
                 enquiryType === 'corporate' ? 'bg-white text-[#073b66] shadow-sm font-black' : 'hover:text-slate-900'
               }`}
             >
               <Building2 size={14} className="text-cyan-600" />
-              Corporate / Camp
+              Corporate / Health Camp
             </button>
           </div>
 
@@ -237,14 +227,14 @@ export function ContactPage({ publicConfig }) {
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="field-label">
-                  {enquiryType === 'doctor' ? "Doctor's Name" : 'Your Name'} <span className="text-red-500">*</span>
+                  Your Full Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   required
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder={enquiryType === 'doctor' ? 'Dr. Sharma' : 'Your Full Name'}
+                  placeholder="Your Full Name"
                   className="field"
                 />
               </div>
@@ -282,9 +272,7 @@ export function ContactPage({ publicConfig }) {
 
               <div>
                 <label className="field-label">
-                  {enquiryType === 'doctor'
-                    ? 'Clinic / Hospital Name'
-                    : enquiryType === 'corporate'
+                  {enquiryType === 'corporate'
                     ? 'Company / Factory / Institution'
                     : 'Organization (optional)'}
                 </label>
@@ -293,9 +281,7 @@ export function ContactPage({ publicConfig }) {
                   value={formData.organization}
                   onChange={(e) => setFormData({ ...formData, organization: e.target.value })}
                   placeholder={
-                    enquiryType === 'doctor'
-                      ? 'Sharma Polyclinic, Mandideep'
-                      : enquiryType === 'corporate'
+                    enquiryType === 'corporate'
                       ? 'e.g. Mandideep Industrial Works Ltd'
                       : 'Optional'
                   }
